@@ -1,0 +1,99 @@
+import type { ThemePack } from '@ludo/engine';
+
+export const magicPack: ThemePack = {
+  id: 'magic-elements',
+  world: {
+    name: 'Magic Ludo: The Battle of the Four Elements',
+    tagline: 'Four guardians. One crown.',
+    story:
+      'The Elemental Crown lies unclaimed in the Crystal Castle. Inferno, Aqua, Terra and Zephyr race across the Enchanted Kingdom — through whispering forests, roaring waterfalls and the dragon-scarred ridge — and only one will wear it.',
+    finish: 'Crystal Castle',
+    startName: 'Guardian Shrine',
+  },
+  zones: [
+    { id: 'forest', name: 'Whispering Forest', type: 'crossing', length: 10, danger: 'low', description: 'Ancient paths cross beneath glowing trees.' },
+    { id: 'falls', name: 'Waterfall Bridges', type: 'merge', length: 9, danger: 'high', description: 'Every route funnels onto the narrow bridges. Battle zone.' },
+    { id: 'ridge', name: "Dragon's Ridge", type: 'branch', length: 9, danger: 'high', description: 'High path or low path — both are scorched by dragonfire.' },
+    { id: 'ladders', name: 'Moonlit Ladders', type: 'lane', length: 8, danger: 'medium', description: 'Starlight rungs let guardians leap between lanes.' },
+    { id: 'gate', name: 'Crystal Gate', type: 'funnel', length: 6, danger: 'high', description: 'One final path to the castle. The leader is always exposed.' },
+  ],
+  tiles: [
+    { id: 'path', base: 'normal', name: 'Enchanted Path', description: 'Ordinary magical stone.', category: 'structural', effects: [], weight: 0 },
+    { id: 'sanctuary', base: 'sanctuary', name: 'Moonwell Sanctuary', description: 'No attacks or captures here.', category: 'structural', effects: [], weight: 0 },
+    { id: 'portal', base: 'portal', name: 'Arcane Portal', description: 'Step through to its twin portal.', category: 'structural', effects: [{ op: 'teleport', to: 'portal_pair' }], weight: 0 },
+    { id: 'leyline', base: 'speed', name: 'Ley-line Surge', description: 'Dash 3 tiles forward.', category: 'helpful', effects: [{ op: 'dash', n: 3 }], weight: 3 },
+    { id: 'aegis', base: 'shield', name: 'Arcane Aegis', description: 'Gain a shield that blocks the next attack.', category: 'helpful', effects: [{ op: 'shield', target: { who: 'self' }, charges: 1, turns: 3 }], weight: 2 },
+    { id: 'star', base: 'mystery', name: 'Wishing Star', description: 'Roll again.', glyph: 'star', category: 'helpful', effects: [{ op: 'extra_roll' }], weight: 2 },
+    { id: 'lightning', base: 'lightning', name: 'Storm Spire', description: 'Lightning strikes! Pushed back 3.', category: 'harmful', effects: [{ op: 'move', target: { who: 'self' }, n: -3 }], weight: 3 },
+    { id: 'curse', base: 'curse', name: 'Hexed Rune', description: 'Your rolls are halved for 2 turns.', category: 'harmful', effects: [{ op: 'modify_dice', target: { who: 'self' }, mode: 'halve', turns: 2 }], weight: 2 },
+    { id: 'frost', base: 'frost', name: 'Frost Sigil', description: 'Frozen solid — skip your next turn.', category: 'harmful', effects: [{ op: 'skip_turn', target: { who: 'self' }, n: 1 }], weight: 2 },
+    { id: 'swap', base: 'swap', name: 'Mirror Rune', description: 'Swap places with the nearest guardian within 8.', category: 'neutral', effects: [{ op: 'swap', target: { who: 'nearest', range: 8 } }], weight: 2 },
+    {
+      id: 'mystery', base: 'mystery', name: 'Mystery Spell', description: 'Something unpredictable happens…', category: 'neutral', weight: 3,
+      effects: [{ op: 'random', options: [
+        [{ op: 'dash', n: 4 }],
+        [{ op: 'move', target: { who: 'self' }, n: -4 }],
+        [{ op: 'charge_ultimate', target: { who: 'self' }, n: 3 }],
+        [{ op: 'skip_turn', target: { who: 'leader' }, n: 1 }],
+        [{ op: 'shield', target: { who: 'self' }, charges: 1, turns: 3 }],
+        [{ op: 'send_to_checkpoint', target: { who: 'self' } }],
+      ] }],
+    },
+    ...(['fire', 'water', 'earth', 'air'] as const).map((el) => ({
+      id: `${el}-well`,
+      base: 'elemental' as const,
+      element: el,
+      glyph: ({ fire: 'flame', water: 'drop', earth: 'leaf', air: 'wind' } as const)[el],
+      name: { fire: 'Ember Well', water: 'Tide Pool', earth: 'Stone Heart', air: 'Sky Vent' }[el],
+      description: `Empowers the ${el} guardian (+3 charge, roll again). Others are pushed back 2.`,
+      category: 'neutral' as const,
+      weight: 1,
+      effects: [{
+        op: 'if_element' as const, element: el,
+        then: [{ op: 'charge_ultimate' as const, target: { who: 'self' as const }, n: 3 }, { op: 'extra_roll' as const }],
+        else: [{ op: 'move' as const, target: { who: 'self' as const }, n: -2 }],
+      }],
+    })),
+  ],
+  characters: [
+    {
+      id: 'inferno', name: 'Inferno', title: 'Guardian of Fire', element: 'fire', role: 'attacker', color: '#ff5a36',
+      bio: 'Reckless and radiant, Inferno would rather burn the path than walk it.',
+      passive: { id: 'ashes', name: 'Ashes', description: 'Guardians you capture also lose their next turn, and every kill stokes your Meteor (+2 charge).', triggers: [{ on: 'capture', effects: [{ op: 'skip_turn', target: { who: 'captured' }, n: 1 }, { op: 'charge_ultimate', target: { who: 'self' }, n: 2 }] }] },
+      active: { id: 'fireball', name: 'Fireball', description: 'Strike the nearest guardian ahead within 5 — a ranged capture that sends them to their checkpoint.', cooldown: 3, requires: { who: 'nearest', range: 5, side: 'ahead' }, effects: [{ op: 'send_to_checkpoint', target: { who: 'nearest', range: 5, side: 'ahead' } }] },
+      ultimate: { id: 'meteor', name: 'Meteor Storm', description: 'Every guardian ahead of you within 8 is blasted back 5, and you charge through the ashes 3.', cost: 8, requires: { who: 'all', range: 8, side: 'ahead' }, effects: [{ op: 'move', target: { who: 'all', range: 8, side: 'ahead' }, n: -5 }, { op: 'dash', n: 3 }] },
+    },
+    {
+      id: 'aqua', name: 'Aqua', title: 'Guardian of Water', element: 'water', role: 'defender', color: '#2fb8ff',
+      bio: 'Patient as the tide. Aqua lets rivals exhaust themselves, then washes them away.',
+      passive: { id: 'bubble', name: 'Healing Bubble', description: 'Begins with a bubble that blocks the first capture or attack, and re-forms whenever Aqua is captured.', startShield: 1, triggers: [{ on: 'captured', effects: [{ op: 'shield', target: { who: 'self' }, charges: 1, turns: 3 }] }] },
+      active: { id: 'whirlpool', name: 'Whirlpool', description: 'Drag the nearest guardian ahead within 6 back 3 while the current carries you 2.', cooldown: 3, requires: { who: 'nearest', range: 6, side: 'ahead' }, effects: [{ op: 'move', target: { who: 'nearest', range: 6, side: 'ahead' }, n: -3 }, { op: 'dash', n: 2 }] },
+      ultimate: { id: 'tidal', name: 'Tidal Wave', description: 'Everyone ahead of you is swept back 3, and you ride the wave forward 3.', cost: 8, requires: { who: 'ahead' }, effects: [{ op: 'move', target: { who: 'ahead' }, n: -3 }, { op: 'dash', n: 3 }] },
+    },
+    {
+      id: 'terra', name: 'Terra', title: 'Guardian of Earth', element: 'earth', role: 'controller', color: '#7fd45a',
+      bio: 'Unmovable and unhurried. Terra reshapes the world so others must go around.',
+      passive: { id: 'rooted', name: 'Rooted', description: 'Immune to being pushed or pulled by other guardians.', pushImmune: true },
+      active: { id: 'wall', name: 'Stone Wall', description: 'Seal the path ahead of the leading guardian within 8 for 1 turn.', cooldown: 5, requires: { who: 'leader', range: 8, side: 'ahead' }, effects: [{ op: 'block_tile', target: { who: 'leader', range: 8, side: 'ahead' }, turns: 1 }] },
+      ultimate: { id: 'quake', name: 'Earthquake', description: 'Every guardian within 4 loses their next turn.', cost: 10, requires: { who: 'all', range: 4 }, effects: [{ op: 'skip_turn', target: { who: 'all', range: 4 }, n: 1 }] },
+    },
+    {
+      id: 'zephyr', name: 'Zephyr', title: 'Guardian of Air', element: 'air', role: 'mover', color: '#c9a7ff',
+      bio: 'Never where you aim. Zephyr dances through the storm and laughs at walls.',
+      passive: { id: 'tailwind', name: 'Tailwind', description: 'A roll of 1 counts as 2.', diceFloor: 2 },
+      active: { id: 'dash', name: 'Gale Dash', description: 'Dash 2 tiles forward, through walls — and through rivals.', cooldown: 4, effects: [{ op: 'dash', n: 2 }] },
+      ultimate: { id: 'escape', name: 'Storm Escape', description: 'Vanish to the farthest safe tile within 7 and gain a shield.', cost: 10, effects: [{ op: 'teleport', to: 'safe_ahead', range: 7 }, { op: 'shield', target: { who: 'self' }, charges: 1, turns: 2 }] },
+    },
+  ],
+  rules: {
+    stormRound: { 2: 22, 3: 24, 4: 26 },
+    stormName: 'The Storm Calls',
+    extraRollOnSix: true,
+    ultimateCharge: { turn: 1, capture: 2, captured: 3 },
+  },
+  art: {
+    style: 'luminous high-fantasy, floating islands, crystal and starlight, painterly',
+    palette: { bg: '#0b0820', surface: '#171236', primary: '#8b5cf6', accent: '#22d3ee', text: '#f1edff' },
+    zoneColors: { forest: '#34d399', falls: '#38bdf8', ridge: '#f97316', ladders: '#a78bfa', gate: '#f0abfc' },
+  },
+};
