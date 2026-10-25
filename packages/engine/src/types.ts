@@ -1,8 +1,9 @@
 // ─── Theme Pack: everything the AI generates ────────────────────────────────
 
-/** Who an effect hits. Everything except `self` targets opponents. */
+/** Who an effect hits. Everything except `self` and `squad` targets opponents' pieces. */
 export type Who =
   | 'self'
+  | 'squad' // every piece of your own squad
   | 'nearest' // closest opponent by path distance
   | 'leader' // opponent closest to the finish
   | 'all'
@@ -10,6 +11,7 @@ export type Who =
   | 'behind'
   | 'random'
   | 'captured' // the opponent you just captured (passive triggers only)
+  | 'captor' // whoever just took you out ("captured" triggers only)
   | 'everyone'; // every player, yourself included
 
 export interface TargetSpec {
@@ -23,11 +25,28 @@ export interface TargetSpec {
 /** The fixed effect primitives the engine knows how to run. AI powers are compositions of these. */
 export type Effect =
   | { op: 'move'; target: TargetSpec; n: number } // forced move, +forward / -backward
-  | { op: 'dash'; n: number } // self forward, ignores blocks, can capture
+  | { op: 'dash'; n: number; squad?: boolean } // self (or whole squad) forward, ignores blocks, can capture
   | { op: 'send_to_checkpoint'; target: TargetSpec }
+  | { op: 'kill'; target: TargetSpec } // a ranged takedown: counts as a capture
   | { op: 'skip_turn'; target: TargetSpec; n: number }
   | { op: 'extra_roll' }
-  | { op: 'shield'; target: TargetSpec; charges: number; turns: number }
+  | { op: 'shield'; target: TargetSpec; charges: number; turns: number; reflect?: boolean } // reflect: a capture bounces back onto the attacker
+  | { op: 'strip'; target: TargetSpec } // removes shields
+  | { op: 'pull'; target: TargetSpec } // drag them onto the tile right in front of you
+  | { op: 'magnet'; range: number; n: number } // rivals in range slide up to n toward you
+  | { op: 'scramble'; range: number } // you and every rival in range trade tiles at random
+  | { op: 'leapfrog'; target: TargetSpec; n: number } // land just past them; they are knocked back n
+  | { op: 'trample'; n: number } // dash that takes out everyone on the path
+  | { op: 'blast'; radius: number; from: 'self' | 'squad' } // takes out every rival within radius
+  | { op: 'scorch'; n: number; turns: number; effects: Effect[] } // traps on the n tiles behind you
+  | { op: 'petrify'; target: TargetSpec; turns: number } // stone: can't move, can't be hurt, nobody can land there
+  | { op: 'snare'; target: TargetSpec; need: number; turns: number } // can only move with a roll of `need` or more
+  | { op: 'ward'; turns: number } // your tile becomes a sanctuary
+  | { op: 'revive' } // fallen squadmates rise at their last checkpoint
+  | { op: 'recall'; range?: number; behind?: boolean } // your rearmost squadmate (within range) joins you, or lands just behind you
+  | { op: 'swap_ally' } // trade places with your most advanced squadmate
+  | { op: 'join'; range: number } // leap forward onto your nearest squadmate ahead within range
+  | { op: 'gather'; range: number } // squadmates within range of your lead fly with it to the farthest safe tile within range
   | { op: 'swap'; target: TargetSpec }
   | { op: 'teleport'; to: 'portal_pair' | 'safe_ahead'; range?: number }
   | { op: 'place_trap'; turns: number; effects: Effect[] } // on your current tile
@@ -42,7 +61,8 @@ export type Effect =
   | { op: 'random'; options: Effect[][] };
 
 export type EffectOp = Effect['op'];
-export type DiceMode = 'halve' | 'max3' | 'plus1';
+/** six: the next roll is a 6. double: it counts twice. reverse: it can only be moved backward. */
+export type DiceMode = 'halve' | 'max3' | 'plus1' | 'six' | 'double' | 'reverse';
 
 export type TileBase =
   | 'normal'
@@ -101,7 +121,20 @@ export interface PassiveDef {
   startShield?: number; // shield charges at game start (never expire)
   diceFloor?: number; // rolls below this count as this
   slopeImmune?: boolean; // uphill zones don't slow you
-  triggers?: { on: 'capture' | 'captured' | 'turn_start'; effects: Effect[] }[];
+  secondLife?: boolean; // each piece's first takedown sends it to its checkpoint instead
+  diceImmune?: boolean; // rivals can't curse your dice
+  /** bond: one of your pieces just joined another on the same tile. */
+  triggers?: { on: 'capture' | 'captured' | 'turn_start' | 'bond'; effects: Effect[] }[];
+}
+
+/** An extra piece in a squad: same colour and house passive/ultimate, its own name and active. */
+export interface SquadMemberDef {
+  id: string;
+  name: string;
+  title: string;
+  bio: string;
+  glyph?: Glyph;
+  active: AbilityDef;
 }
 
 export interface CharacterDef {
@@ -112,8 +145,12 @@ export interface CharacterDef {
   role: 'attacker' | 'controller' | 'defender' | 'mover';
   color: string;
   bio: string;
-  /** Icon for tokens and emblems; generated themes set this, Magic Ludo derives it from element. */
+  /** Icon for tokens and emblems; generated themes set this, the elemental world derives it from element. */
   glyph?: Glyph;
+  /** Name of the whole squad when it has more than one piece, e.g. "House of Embers". */
+  house?: string;
+  /** More pieces besides this leader. Piece 0 is always the leader. */
+  squad?: SquadMemberDef[];
   passive: PassiveDef;
   active: AbilityDef;
   ultimate: AbilityDef;
@@ -149,10 +186,14 @@ export interface ThemeRules {
   movement?: 'both' | 'forward';
   /**
    * What a capture does to the victim. 'checkpoint' (default) sends them to their last checkpoint;
-   * 'tow' knocks them back `back` tiles; 'stun' leaves them in place but costs them their next turn.
-   * `steal` moves that much ultimate charge from victim to attacker.
+   * 'start' sends them all the way home; 'tow' knocks them back `back` tiles; 'stun' leaves them
+   * in place but costs them their next turn. `steal` moves that much ultimate charge from victim to attacker.
    */
-  capture?: { mode: 'checkpoint' | 'tow' | 'stun'; back?: number; steal?: number };
+  capture?: { mode: 'checkpoint' | 'start' | 'tow' | 'stun'; back?: number; steal?: number };
+  /** Pieces a squad must bring to the finish to win (default 1). */
+  winAt?: number;
+  /** Bonded pieces travel together when one of them moves. */
+  bondMarch?: boolean;
   /** Rotating reign: every `every` rounds the next element in `elements` reigns; its champions get +`bonus` on forward moves. */
   tides?: { every: number; elements: string[]; bonus: number; name: string };
 }
@@ -222,21 +263,44 @@ export interface Board {
 
 // ─── Game state ────────────────────────────────────────────────────────────
 
+export interface PieceState {
+  /** Leader's character id for piece 0, squad member id otherwise. */
+  member: string;
+  tile: number;
+  checkpoint: number;
+  cooldown: number;
+  shield: { charges: number; turns: number; reflect?: boolean } | null;
+  /** Tile this piece's owner's current/last turn started on (for rewind). */
+  turnStart: number;
+  /** Turns left as stone (0 = flesh). */
+  stone: number;
+  snare: { need: number; turns: number } | null;
+  /** secondLife already spent. */
+  saved: boolean;
+}
+
 export interface PlayerState {
   seat: number;
   character: string;
   bot: boolean;
-  tile: number;
-  checkpoint: number;
+  pieces: PieceState[];
   ult: number;
-  cooldown: number;
-  shield: { charges: number; turns: number } | null;
   skip: number;
   dice: { mode: DiceMode; turns: number } | null;
   captures: number;
   timesCaptured: number;
-  /** Tile this player's current/last turn started on (for rewind). */
-  turnStart: number;
+}
+
+/** One piece on the board. */
+export interface PieceRef {
+  seat: number;
+  piece: number;
+}
+
+export interface Ward {
+  tile: number;
+  owner: number;
+  turns: number;
 }
 
 export interface Trap {
@@ -254,6 +318,8 @@ export interface Block {
 }
 
 export interface MoveOption {
+  /** Which of the mover's pieces travels. */
+  piece: number;
   dir: 'fwd' | 'back';
   /** Which die this move uses (pick2 dice). */
   die?: number;
@@ -282,12 +348,18 @@ export type GameEvent = {
     | 'event_warning'
     | 'tide'
     | 'checkpoint'
+    | 'bond'
+    | 'home'
     | 'win';
   seat: number;
+  /** The acting piece of `seat` (0 when omitted). */
+  piece?: number;
   msg: string;
   /** Tile/ability id that caused it, for stats and FX. */
   source?: string;
   targets?: number[];
+  /** Piece of each seat in `targets`, same order. */
+  hits?: number[];
   tile?: number;
   path?: number[];
   value?: number;
@@ -316,6 +388,7 @@ export interface GameState {
   extraRolls: number;
   traps: Trap[];
   blocks: Block[];
+  wards: Ward[];
   portalCd: Record<number, number>;
   rng: number;
   events: GameEvent[];
@@ -329,4 +402,4 @@ export interface GameState {
 export type Action =
   | { type: 'roll' }
   | { type: 'move'; index: number }
-  | { type: 'ability'; which: 'active' | 'ultimate' };
+  | { type: 'ability'; which: 'active' | 'ultimate'; /** Whose active; defaults to piece 0. */ piece?: number };

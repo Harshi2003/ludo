@@ -52,15 +52,15 @@ describe('Party-only organic board and presentation isolation', () => {
       expect(routes.size).toBe(30); expect(layouts.size).toBe(30);
     }
   });
-  it('keeps the shared motion implementation unchanged apart from the Party hop sound in the isolated Party renderer', () => {
+  it('keeps the shared hop animation unchanged apart from the Party hop sound in the isolated Party renderer', () => {
     // Normalize line endings so the comparison holds on Windows checkouts (core.autocrlf) too.
     const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     const shared = read('../board/BoardRenderer.ts');
     const party = read('./PartyBoardRenderer.ts');
-    const motion = (source: string) => source.slice(source.indexOf('  async playEvent('), source.indexOf('  private shockwave('));
-    // World events (e.g. Fog City's) never happen in Party, so its renderer has no case for them.
-    const withoutWorldEvents = (source: string) => source.replace(/      case "world_event": \{[\s\S]*?\n      \}\n\n/, '');
-    expect(motion(party).replace('    sfx.hop(tileId % 5);\n', '')).toBe(withoutWorldEvents(motion(shared)));
+    // The main renderer's event playback also animates squads (several pieces per seat, marching
+    // bonds), which Party never has; the step-by-step hop is what both must keep identical.
+    const hop = (source: string) => source.slice(source.indexOf('  private async hop('), source.indexOf('  private async teleport('));
+    expect(hop(party).replace('    sfx.hop(tileId % 5);\n', '')).toBe(hop(shared));
     expect(party).toContain('drawPartyTileArt'); expect(party).not.toContain('buildIsland({');
   });
 });

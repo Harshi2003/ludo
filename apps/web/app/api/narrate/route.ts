@@ -1,7 +1,6 @@
-import { BITDEER_MODEL, bitdeerChat } from "@/lib/ai/bitdeer";
+import { STUDIO, bitdeerChat, stripThinking } from "@/lib/ai/bitdeer";
 
-/** A fast catalog model suits one-liners; falls back to the forge model. */
-const MODEL = process.env.BITDEER_NARRATOR_MODEL || BITDEER_MODEL;
+const MODEL = STUDIO.narrator;
 
 interface NarrateBody {
   world?: { name?: string; tagline?: string };
@@ -14,9 +13,9 @@ interface NarrateBody {
 
 const clip = (s: unknown, n: number) => (typeof s === "string" ? s.slice(0, n) : "");
 
-/** GET → whether live commentary is available. */
+/** GET → whether Bitdeer is available, and which Model Studio model runs each job. */
 export function GET() {
-  return Response.json({ enabled: !!process.env.BITDEER_API_KEY, provider: "Bitdeer AI Model Studio", model: MODEL });
+  return Response.json({ enabled: !!process.env.BITDEER_API_KEY, provider: "Bitdeer AI Model Studio", model: MODEL, routing: STUDIO });
 }
 
 /** POST NarrateBody → { line, model, ms, usage }. 503 when no key, so the client just stays quiet. */
@@ -39,7 +38,7 @@ Reply with ONE punchy commentary line (max 18 words) about the most exciting thi
       // GLM spends hidden reasoning tokens from this budget too; leave headroom so the line isn't cut off.
       { model: MODEL, maxTokens: 2000, temperature: 0.95, timeoutMs: 12_000, reasoningEffort: "low" },
     );
-    const line = r.text.replace(/<think>[\s\S]*?<\/think>/g, "").trim().split("\n").find((l) => l.trim())?.replace(/^["'“]|["'”]$/g, "").trim();
+    const line = stripThinking(r.text).split("\n").find((l) => l.trim())?.replace(/^["'“]|["'”]$/g, "").trim();
     if (!line) return Response.json({ error: "empty" }, { status: 502 });
     return Response.json({ line: line.slice(0, 180), model: r.model, ms: r.ms, usage: r.usage ?? null });
   } catch (err) {

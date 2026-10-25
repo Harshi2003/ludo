@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ThemePack } from "@ludo/engine";
 import { autoBalance, pirateFixture, validatePack, type BalanceSummary } from "@ludo/themepack";
-import { paintWorld } from "./art";
+import { canPaint, paintWorld } from "./art";
 import { BITDEER_MODEL, BitdeerError, bitdeerChat, type ChatMessage } from "./bitdeer";
 import { FORGE_SYSTEM, forgeUserPrompt, repairPrompt } from "./prompt";
 
@@ -14,7 +14,7 @@ export type ForgeEvent =
   | { stage: "invalid"; errors: string[] }
   | { stage: "valid"; name: string; warnings: string[] }
   | { stage: "balance"; before: BalanceSummary; after: BalanceSummary; changes: string[] }
-  | { stage: "art"; status: "painting" | "done" | "skipped"; count?: number }
+  | { stage: "art"; status: "painting" | "done" | "skipped"; count?: number; by?: string }
   | { stage: "done"; pack: ThemePack; provider: string; model: string }
   | { stage: "error"; message: string };
 
@@ -166,12 +166,12 @@ export async function forgeWorld(theme: string, emit: (e: ForgeEvent) => void, o
   pack = b.pack;
   emit({ stage: "balance", before: b.before, after: b.after, changes: b.changes });
 
-  if (process.env.FAL_KEY && !opts.mock) {
+  if (canPaint() && !opts.mock) {
     emit({ stage: "art", status: "painting" });
     const art = await paintWorld(pack);
     pack.art.backgroundUrl = art.background;
     pack.art.portraits = art.portraits;
-    emit({ stage: "art", status: "done", count: Object.keys(art.portraits).length + (art.background ? 1 : 0) });
+    emit({ stage: "art", status: "done", count: Object.keys(art.portraits).length + (art.background ? 1 : 0), by: art.by });
   } else {
     emit({ stage: "art", status: "skipped" });
   }

@@ -5,6 +5,21 @@
 export const BITDEER_URL = process.env.BITDEER_BASE_URL ?? "https://api-inference.bitdeer.ai/v1";
 export const BITDEER_MODEL = process.env.BITDEER_MODEL ?? "zai-org/GLM-5.3";
 
+/**
+ * Each job runs on the Model Studio model that suits it: a Flash model where a
+ * player is waiting on the answer, a stronger writer for the end-of-game saga,
+ * and Seedream for art. Any of them can be overridden from the environment.
+ */
+export const STUDIO = {
+  forge: BITDEER_MODEL,
+  narrator: process.env.BITDEER_NARRATOR_MODEL || "zai-org/GLM-5.3-Flash",
+  rival: process.env.BITDEER_RIVAL_MODEL || "zai-org/GLM-5.3-Flash",
+  oracle: process.env.BITDEER_RIVAL_MODEL || "zai-org/GLM-5.3-Flash",
+  saga: process.env.BITDEER_SAGA_MODEL || "deepseek-ai/DeepSeek-V4.1-Flash",
+  art: process.env.BITDEER_IMAGE_MODEL || "seedream-5.0-lite",
+} as const;
+export type StudioTask = keyof typeof STUDIO;
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -66,4 +81,39 @@ export async function bitdeerChat(
     usage: j.usage,
     ms: Date.now() - t0,
   };
+}
+
+/** The reply text without any leaked <think> block. */
+export const stripThinking = (s: string) => s.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+
+/** Pulls the first JSON object out of a reply, tolerating fences and chatter around it. */
+export function replyJson<T>(text: string): T | undefined {
+  const s = stripThinking(text);
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start < 0 || end < start) return undefined;
+  try {
+    return JSON.parse(s.slice(start, end + 1)) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One Seedream image. Returns a short-lived URL (it expires), so callers keep their own copy. */
+export async function bitdeerImage(prompt: string, opts: { size?: string; timeoutMs?: number } = {}): Promise<string> {
+  const key = process.env.BITDEER_API_KEY;
+  if (!key) throw new BitdeerError("BITDEER_API_KEY is not set");
+  const res = await fetch(`${BITDEER_URL}/images/generations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: STUDIO.art, prompt, ...(opts.size && { size: opts.size }) }),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 150_000),
+  }).catch((err) => {
+    throw new BitdeerError(`Couldn't reach Bitdeer (${(err as Error).name})`);
+  });
+  if (!res.ok) throw new BitdeerError(`Seedream returned ${res.status}`, res.status);
+  const j = (await res.json()) as { data?: { url?: string }[] };
+  const url = j.data?.[0]?.url;
+  if (!url) throw new BitdeerError("Seedream returned no image");
+  return url;
 }

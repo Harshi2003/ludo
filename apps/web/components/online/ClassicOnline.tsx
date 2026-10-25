@@ -9,6 +9,7 @@ import type { OnlineWorldProps } from "@/lib/lobby/types";
 import { OnlineShell, RoomEntry, RoomLobby, lobbyButton } from "../lobby/Lobby";
 import { Emblem } from "../Emblem";
 import Game, { type OnlineBinding } from "../game/Game";
+import { squadName } from "@/lib/squad";
 
 export default function ClassicOnline({ world, initialCode, initialMode, joinRequest, onCrossJoin, onJoinHandled }: OnlineWorldProps) {
   const api = useRoom(initialCode);
@@ -37,13 +38,13 @@ export default function ClassicOnline({ world, initialCode, initialMode, joinReq
   const me = room?.members.find(m => m.id === you?.id), host = room?.hostId === you?.id;
   return <OnlineShell connected={connected} error={api.error} onLeave={() => { if (room) api.leave(); }}>
     {room && pack && you ? <RoomLobby world={pack} code={room.code} meId={you.id} host={host} connected={connected} pending={api.requestPending} allowBots={room.allowBots}
-      members={room.members.map(m => ({ id: m.id, name: m.name, profile: m.profile ?? DEFAULT_PROFILE, connected: m.connected, ready: !!m.ready, host: m.id === room.hostId, playing: !!m.character, detail: pack.characters.find(c => c.id === m.character)?.name ?? "Watching" }))}
+      members={room.members.map(m => ({ id: m.id, name: m.name, profile: m.profile ?? DEFAULT_PROFILE, connected: m.connected, ready: !!m.ready, host: m.id === room.hostId, playing: !!m.character, detail: (() => { const c = pack.characters.find(c => c.id === m.character); return c ? squadName(c) : "Watching"; })() }))}
       onReady={api.ready} onStart={api.start} onLeave={leave}
       extra={<details className="glass rounded-2xl p-4"><summary className="cursor-pointer text-sm text-accent">Champions &amp; optional bots</summary>
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">{pack.characters.map(c => {
           const mine = me?.character === c.id;
           const taken = room.members.some(m => m.id !== you.id && m.character === c.id);
-          return <button key={c.id} disabled={!connected || api.requestPending || taken} aria-pressed={mine} onClick={() => api.pick(mine ? null : c.id)} className={`${lobbyButton} px-2 text-center ${mine ? "border-accent bg-primary/20" : ""}`}><span className="mx-auto block w-fit"><Emblem c={c} size={40} portrait={pack.art.portraits?.[c.id]} /></span><span className="mt-2 block text-xs">{c.name}{mine ? " · you" : ""}</span></button>;
+          return <button key={c.id} disabled={!connected || api.requestPending || taken} aria-pressed={mine} onClick={() => api.pick(mine ? null : c.id)} className={`${lobbyButton} px-2 text-center ${mine ? "border-accent bg-primary/20" : ""}`}><span className="mx-auto block w-fit"><Emblem c={c} size={40} portrait={pack.art.portraits?.[c.id]} /></span><span className="mt-2 block text-xs">{squadName(c)}{mine ? " · you" : ""}</span></button>;
         })}</div>
         {host && <><label className="mt-5 flex items-start gap-3 text-sm text-muted"><input type="checkbox" checked={room.allowBots} disabled={!connected || api.requestPending} onChange={e => api.bots(e.target.checked)} className="mt-1" />Fill empty seats and cover away players with bots</label>
           {room.allowBots && <div className="mt-3 flex gap-2" role="group" aria-label="Seats">{([2, 3, 4] as const).map(count => <button key={count} disabled={api.requestPending || count < room.members.filter(m => m.character).length} aria-pressed={room.playerCount === count} className={lobbyButton} onClick={() => api.players(count)}>{count} seats</button>)}</div>}

@@ -43,7 +43,7 @@ export function PartyMinimap({ pack, state, renderer }: { pack: ThemePack; state
       <rect x={cam.x0} y={minY} width={Math.max(0, cam.x1 - cam.x0)} height={maxY - minY} fill="rgba(255,255,255,.07)"
         stroke="rgba(255,255,255,.55)" strokeWidth={12} rx={30} />
       {state.players.map((p) => {
-        const t = pts[p.tile];
+        const t = pts[p.pieces[0].tile];
         const c = character(pack, p.character);
         return <circle key={p.seat} cx={t.x} cy={t.y} r={44} fill={c.color} stroke="#fff" strokeWidth={10} />;
       })}

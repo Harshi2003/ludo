@@ -6,10 +6,10 @@ const display = Cinzel({ variable: "--font-display", subsets: ["latin"], weight:
 const sans = Inter({ variable: "--font-sans", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Magic Ludo — Battle of the Four Elements",
-  description: "An AI-forged Ludo adventure. Four elemental guardians race and battle to the Crystal Castle.",
-  applicationName: "Magic Ludo",
-  appleWebApp: { capable: true, title: "Magic Ludo", statusBarStyle: "black-translucent" },
+  title: "Dicebound · Race the Realms",
+  description: "Command a squad of legends, race rival houses across living kingdoms and claim the throne. Land on a rival and they fall. Stand together and your powers combine.",
+  applicationName: "Dicebound",
+  appleWebApp: { capable: true, title: "Dicebound", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

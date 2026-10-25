@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Magic Ludo — Battle of the Four Elements",
-    short_name: "Magic Ludo",
-    description: "An AI-forged Ludo adventure for 2–4 players.",
+    name: "Dicebound · Race the Realms",
+    short_name: "Dicebound",
+    description: "Squad battles across living kingdoms for 2 to 4 players.",
     start_url: "/",
     display: "fullscreen",
     orientation: "landscape",

@@ -1,5 +1,5 @@
 import {
-  character, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
+  character, leadPiece, members, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
 } from "@ludo/engine";
 import { ANIMATION_TIMING } from "@ludo/net";
 import { Application, Assets, Container, Graphics, Sprite, Text, type Texture } from "pixi.js";
@@ -22,6 +22,10 @@ interface TileView {
 
 interface TokenView {
   seat: number;
+  /** Which piece of the seat's squad. */
+  piece: number;
+  /** Resting scale: squad pieces are drawn a little smaller. */
+  size: number;
   root: Container;
   body: Container;
   aura: Sprite;
@@ -84,6 +88,8 @@ export class BoardRenderer extends BoardCamera {
   protected extents!: ReturnType<typeof boardExtents>;
   private time = 0;
   protected activeSeat = -1;
+  /** Each seat's lead piece, which the camera follows. */
+  private leads: number[] = [];
   private destroyed = false;
 
   onPick?: (index: number) => void;
@@ -111,8 +117,16 @@ export class BoardRenderer extends BoardCamera {
     r.build(state);
     r.bindInput();
     r.app.ticker.add((t) => r.tick(t.deltaMS));
-    r.resetCamera(state.players[state.turn].tile, true);
+    r.resetCamera(state.players[state.turn].pieces[leadPiece(state, state.turn)].tile, true);
     return r;
+  }
+
+  private tok(seat: number, piece = 0): TokenView | undefined {
+    return this.tokens.find((t) => t.seat === seat && t.piece === piece);
+  }
+
+  protected override seatToken(seat: number) {
+    return this.tok(seat, this.leads[seat] ?? 0);
   }
 
   destroy() {
@@ -184,7 +198,8 @@ export class BoardRenderer extends BoardCamera {
     this.buildEdges();
     for (const t of board.tiles) if (!t.finish) this.tiles.push(this.buildTile(t, state));
     this.buildZoneLabels();
-    state.players.forEach((p) => this.tokens.push(this.buildToken(p.seat, state)));
+    state.players.forEach((p) => p.pieces.forEach((_, i) => this.tokens.push(this.buildToken(p.seat, i, state))));
+    this.leads = state.players.map((p) => leadPiece(state, p.seat));
     this.layoutTokens(false);
     this.updateStatus(state);
   }
@@ -502,9 +517,10 @@ export class BoardRenderer extends BoardCamera {
     addGlow(root, 0, -150, "#ff7ac2", 6, 0.3);
   }
 
-  private buildToken(seat: number, state: GameState): TokenView {
+  private buildToken(seat: number, piece: number, state: GameState): TokenView {
     const p = state.players[seat];
     const c = character(this.pack, p.character);
+    const member = members(c)[piece] ?? c;
     const root = new Container();
     const body = new Container();
     const aura = new Sprite(glowTexture());
@@ -528,7 +544,8 @@ export class BoardRenderer extends BoardCamera {
 
     const g = new Graphics();
     g.circle(0, 0, TOKEN_R).stroke({ width: 2.5, color: 0xffffff, alpha: 0.85 });
-    drawGlyph(g, c.glyph ?? ELEMENT_GLYPH[c.element] ?? "gem", TOKEN_R * 0.5, 0xffffff, hex(c.color));
+    // Squad members wear their own symbol so you can tell them apart at a glance.
+    drawGlyph(g, member.glyph ?? c.glyph ?? ELEMENT_GLYPH[c.element] ?? "gem", TOKEN_R * 0.5, 0xffffff, hex(c.color));
     const spec = new Sprite(glowTexture());
     spec.anchor.set(0.5);
     spec.scale.set(0.16);
@@ -543,8 +560,11 @@ export class BoardRenderer extends BoardCamera {
     const status = new Container();
     body.addChild(orb, g, spec, shield, status);
     root.addChild(ring, aura, shadow, body);
+    // Squads field several pieces, so each is a little smaller than a lone champion.
+    const size = p.pieces.length > 1 ? 0.82 : 1;
+    root.scale.set(size);
     this.tokensLayer.addChild(root);
-    return { seat, root, body, aura, ring, shield, status, tile: p.tile, color: c.color };
+    return { seat, piece, size, root, body, aura, ring, shield, status, tile: p.pieces[piece].tile, color: c.color };
   }
 
   // ─── Camera ────────────────────────────────────────────────────────────
@@ -568,7 +588,7 @@ export class BoardRenderer extends BoardCamera {
     });
     this.pointers.clear();
     this.dragStart = null;
-    this.resetCamera(this.tokens[this.activeSeat]?.tile ?? this.board.starts[0], true);
+    this.resetCamera(this.seatToken(this.activeSeat)?.tile ?? this.board.starts[0], true);
   }
 
   // ─── Frame loop ──────────────────────────────────────────────────────
@@ -603,8 +623,9 @@ export class BoardRenderer extends BoardCamera {
     if (this.crown) this.crown.y = -262 + Math.sin(this.time * 1.6) * 8;
 
     for (const tk of this.tokens) {
-      tk.body.y = Math.sin(this.time * 3 + tk.seat) * 2.5 - TOKEN_R * 0.45;
-      tk.aura.alpha = 0.55 + 0.25 * Math.sin(this.time * 2.5 + tk.seat);
+      const phase = tk.seat + tk.piece * 1.7;
+      tk.body.y = Math.sin(this.time * 3 + phase) * 2.5 - TOKEN_R * 0.45;
+      tk.aura.alpha = 0.55 + 0.25 * Math.sin(this.time * 2.5 + phase);
       if (tk.ring.visible) {
         const s = 1 + 0.12 * Math.sin(this.time * 5);
         tk.ring.scale.set(s);
@@ -688,30 +709,32 @@ export class BoardRenderer extends BoardCamera {
 
   // ─── Tokens & state sync ────────────────────────────────────────────────
 
-  /** Spread tokens that share a tile so all stay visible. */
-  private offsets(seat: number): { x: number; y: number } {
-    const tile = this.tokens[seat].tile;
-    const here = this.tokens.filter((t) => t.tile === tile).map((t) => t.seat);
-    const i = here.indexOf(seat);
+  /**
+   * Spread tokens that share a tile so all stay visible. One squad alone on a tile is a bond:
+   * its pieces stack upward like a tower instead of fanning out.
+   */
+  private offsets(tk: TokenView): { x: number; y: number } {
+    const here = this.tokens.filter((t) => t.tile === tk.tile);
+    const i = here.indexOf(tk);
     const n = here.length;
     if (n <= 1) return { x: 0, y: 0 };
+    if (here.every((t) => t.seat === tk.seat) && !this.board.tiles[tk.tile].finish) return { x: (i - (n - 1) / 2) * 5, y: -i * 12 };
     const a = (i / n) * Math.PI * 2 - Math.PI / 2;
-    return { x: Math.cos(a) * 13, y: Math.sin(a) * 9 };
+    const r = n > 3 ? 18 : 13;
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r * 0.7 };
   }
 
-  private tokenTarget(seat: number) {
-    const tk = this.tokens[seat];
+  private tokenTarget(tk: TokenView) {
     const t = this.board.tiles[tk.tile];
-    if (t.finish) return { x: this.castle.x, y: this.castle.y };
-    const p = tilePos(t);
-    const o = this.offsets(seat);
+    const p = t.finish ? this.castle : tilePos(t);
+    const o = this.offsets(tk);
     return { x: p.x + (this.portrait ? o.y : o.x), y: p.y + (this.portrait ? -o.x : o.y) };
   }
 
-  private layoutTokens(animate: boolean, except?: number) {
+  private layoutTokens(animate: boolean, except?: TokenView) {
     for (const tk of this.tokens) {
-      if (tk.seat === except) continue;
-      const p = this.tokenTarget(tk.seat);
+      if (tk === except) continue;
+      const p = this.tokenTarget(tk);
       if (!animate) tk.root.position.set(p.x, p.y);
       else {
         const sx = tk.root.x;
@@ -733,12 +756,14 @@ export class BoardRenderer extends BoardCamera {
   async sync(state: GameState, animate = true) {
     const moves: Promise<void>[] = [];
     for (const p of state.players) {
-      const tk = this.tokens[p.seat];
-      if (tk.tile !== p.tile) {
-        tk.tile = p.tile;
-        if (animate) moves.push(this.flyToken(tk, p.tile, 700));
-      }
+      p.pieces.forEach((q, i) => {
+        const tk = this.tok(p.seat, i);
+        if (!tk || tk.tile === q.tile) return;
+        tk.tile = q.tile;
+        if (animate) moves.push(this.flyToken(tk, q.tile, 700));
+      });
     }
+    this.leads = state.players.map((p) => leadPiece(state, p.seat));
     await Promise.all(moves);
     this.layoutTokens(animate);
     this.updateStatus(state);
@@ -746,24 +771,41 @@ export class BoardRenderer extends BoardCamera {
 
   private updateStatus(state: GameState) {
     for (const p of state.players) {
-      const tk = this.tokens[p.seat];
-      tk.shield.visible = !!p.shield;
-      tk.status.removeChildren().forEach((c) => c.destroy());
-      let x = TOKEN_R * 0.9;
-      const badge = (glyph: "snowflake" | "eye", color: number) => {
-        const g = new Graphics();
-        g.circle(0, 0, 9).fill(0x0b0820);
-        g.circle(0, 0, 9).stroke({ width: 1.5, color });
-        drawGlyph(g, glyph, 5.5, color, 0x0b0820);
-        g.position.set(x, -TOKEN_R * 0.9);
-        tk.status.addChild(g);
-        x -= 20;
-      };
-      if (p.skip > 0) badge("snowflake", 0x93c5fd);
-      if (p.dice && p.dice.mode !== "plus1") badge("eye", 0xf472b6);
+      p.pieces.forEach((q, i) => {
+        const tk = this.tok(p.seat, i);
+        if (!tk) return;
+        tk.shield.visible = !!q.shield;
+        // Stone pieces lose their colour until they thaw.
+        tk.body.alpha = q.stone > 0 ? 0.55 : 1;
+        tk.status.removeChildren().forEach((c) => c.destroy());
+        let x = TOKEN_R * 0.9;
+        const badge = (glyph: "snowflake" | "eye" | "leaf" | "shield", color: number) => {
+          const g = new Graphics();
+          g.circle(0, 0, 9).fill(0x0b0820);
+          g.circle(0, 0, 9).stroke({ width: 1.5, color });
+          drawGlyph(g, glyph, 5.5, color, 0x0b0820);
+          g.position.set(x, -TOKEN_R * 0.9);
+          tk.status.addChild(g);
+          x -= 20;
+        };
+        if (q.stone > 0) badge("shield", 0xd6d3d1);
+        if (q.snare) badge("leaf", 0x86efac);
+        // Turn-level effects belong to the whole squad; show them once, on the lead piece.
+        if (i !== (this.leads[p.seat] ?? 0)) return;
+        if (p.skip > 0) badge("snowflake", 0x93c5fd);
+        if (p.dice && !["plus1", "six", "double"].includes(p.dice.mode)) badge("eye", 0xf472b6);
+      });
     }
 
     this.marks.removeChildren().forEach((c) => c.destroy());
+    for (const w of state.wards) {
+      const pos = tilePos(this.board.tiles[w.tile]);
+      const g = new Graphics();
+      g.circle(0, 0, TILE_R * 0.95).fill({ color: 0xfef3c7, alpha: 0.12 });
+      g.circle(0, 0, TILE_R * 0.95).stroke({ width: 2, color: 0xfde68a, alpha: 0.8 });
+      g.position.set(pos.x, pos.y);
+      this.marks.addChild(g);
+    }
     for (const trap of state.traps) {
       const pos = tilePos(this.board.tiles[trap.tile]);
       const col = character(this.pack, state.players[trap.owner].character).color;
@@ -799,11 +841,20 @@ export class BoardRenderer extends BoardCamera {
 
   // ─── Move picking ──────────────────────────────────────────────────────
 
+  private shownMoves: MoveOption[] = [];
+
+  /** Draws the Oracle's recommended path in gold until the player hovers another move. */
+  showAdvice(index: number) {
+    const m = this.shownMoves[index];
+    if (m) this.previewPath(m, "#fde68a");
+  }
+
   setMoves(moves: MoveOption[] | null, seat: number) {
     this.highlights.removeChildren().forEach((c) => c.destroy());
     this.pathPreview.clear();
+    this.shownMoves = moves ?? [];
     if (!moves) return;
-    const color = this.tokens[seat]?.color ?? "#ffffff";
+    const color = this.tok(seat)?.color ?? "#ffffff";
     moves.forEach((m, index) => {
       const t = this.board.tiles[m.to];
       const p = t.finish ? this.castle : tilePos(t);
@@ -846,7 +897,7 @@ export class BoardRenderer extends BoardCamera {
   private previewPath(m: MoveOption, color: string) {
     const g = this.pathPreview;
     g.clear();
-    const start = this.tokens[this.activeSeat]?.tile;
+    const start = this.tok(this.activeSeat, m.piece)?.tile;
     if (start === undefined) return;
     const pts = [start, ...m.path].map((id) => {
       const t = this.board.tiles[id];
@@ -866,7 +917,9 @@ export class BoardRenderer extends BoardCamera {
   // ─── Event playback ─────────────────────────────────────────────────────
 
   async playEvent(e: GameEvent, state: GameState): Promise<void> {
-    const tk = this.tokens[e.seat];
+    const tk = this.tok(e.seat, e.piece ?? 0);
+    /** The pieces an event names in targets/hits. */
+    const hit = (i: number) => (e.targets?.[i] === undefined ? undefined : this.tok(e.targets[i], e.hits?.[i] ?? 0));
     switch (e.kind) {
       case "turn":
         this.setActive(e.seat);
@@ -880,17 +933,30 @@ export class BoardRenderer extends BoardCamera {
         const from = this.board.tiles[tk.tile];
         const adjacent = from.next.includes(first.id) || from.prev.includes(first.id);
         if (e.path.length === 1 && !adjacent) return this.teleport(tk, first.id);
-        for (const id of e.path) await this.hop(tk, id);
+        // A marching bond: its escorts hop the same path side by side.
+        const group = [tk, ...(e.targets ?? []).map((_, i) => hit(i)).filter((t): t is TokenView => !!t)];
+        for (const id of e.path) await Promise.all(group.map((t) => this.hop(t, id)));
         this.layoutTokens(true);
         return;
       }
 
+      case "bond":
+      case "home":
+        if (tk) {
+          this.shockwave(tk.root.x, tk.root.y, e.kind === "home" ? "#fcd34d" : tk.color, 110);
+          this.floatText(e.kind === "home" ? "Home!" : "Bond!", tk.root.x, tk.root.y - 44, e.kind === "home" ? "#fcd34d" : tk.color);
+        }
+        this.layoutTokens(true);
+        return this.tw.wait(380);
+
       case "capture": {
-        const victim = this.tokens[e.targets?.[0] ?? -1];
-        const at = victim ? victim.root.position.clone() : tk.root.position.clone();
-        this.emit(at.x, at.y, tk.color, 46, 380, 0.9, 0.5);
+        const victim = hit(0);
+        if (!tk && !victim) return;
+        const color = (tk ?? victim)!.color;
+        const at = (victim ?? tk)!.root.position.clone();
+        this.emit(at.x, at.y, color, 46, 380, 0.9, 0.5);
         this.emit(at.x, at.y, "#ffffff", 20, 260, 0.6, 0.35);
-        this.shockwave(at.x, at.y, tk.color, 140);
+        this.shockwave(at.x, at.y, color, 140);
         if (victim && e.to !== undefined) {
           victim.tile = e.to;
           await this.tw.wait(180);
@@ -901,7 +967,7 @@ export class BoardRenderer extends BoardCamera {
       }
 
       case "blocked_capture": {
-        const victim = this.tokens[e.targets?.[0] ?? -1];
+        const victim = hit(0);
         if (victim) {
           this.shockwave(victim.root.x, victim.root.y, "#7dd3fc", 70);
           this.emit(victim.root.x, victim.root.y, "#bae6fd", 24, 200, 0.6, 0.35);
@@ -944,8 +1010,8 @@ export class BoardRenderer extends BoardCamera {
       }
 
       case "effect":
-        for (const s of e.targets ?? []) {
-          const t = this.tokens[s];
+        for (let i = 0; i < (e.targets?.length ?? 0); i++) {
+          const t = hit(i);
           if (!t) continue;
           this.emit(t.root.x, t.root.y, tk?.color ?? "#fff", 18, 200, 0.6, 0.4);
           void this.tw.to(300, (k) => t.body.scale.set(1 + Math.sin(k * Math.PI) * 0.3));
@@ -1020,13 +1086,13 @@ export class BoardRenderer extends BoardCamera {
   private async teleport(tk: TokenView, tileId: number) {
     this.emit(tk.root.x, tk.root.y, tk.color, 30, 220, 0.7, 0.4);
     this.shockwave(tk.root.x, tk.root.y, "#b794ff", 90);
-    await this.tw.to(350, (k) => tk.root.scale.set(1 - k));
+    await this.tw.to(350, (k) => tk.root.scale.set(tk.size * (1 - k)));
     tk.tile = tileId;
-    const p = this.tokenTarget(tk.seat);
+    const p = this.tokenTarget(tk);
     tk.root.position.set(p.x, p.y);
     this.shockwave(p.x, p.y, "#b794ff", 90);
     this.emit(p.x, p.y, tk.color, 30, 220, 0.7, 0.4);
-    await this.tw.to(450, (k) => tk.root.scale.set(k), ease.outCubic);
+    await this.tw.to(450, (k) => tk.root.scale.set(tk.size * k), ease.outCubic);
     this.layoutTokens(true);
   }
 
@@ -1034,7 +1100,7 @@ export class BoardRenderer extends BoardCamera {
     tk.tile = tileId;
     const sx = tk.root.x;
     const sy = tk.root.y;
-    const p = this.tokenTarget(tk.seat);
+    const p = this.tokenTarget(tk);
     const lift = Math.min(80, 25 + Math.abs(p.x - sx) * 0.1);
     let last = 0;
     await this.tw.to(

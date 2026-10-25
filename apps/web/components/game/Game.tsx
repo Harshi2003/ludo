@@ -13,8 +13,12 @@ import { Dice, type DiceHandle } from "../Dice";
 import { AbilityBar, Cinematic, LogDrawer, ModelStudioPanel, NarratorTicker, PlayerCards, Toasts, Victory, WorldEventBanner, type Toast } from "./hud";
 import type { GameFeed } from "@/lib/net/useRoom";
 import { useNarrator } from "@/lib/ai/narrator";
+import { askRival } from "@/lib/ai/rival";
+import { callStudio, readPref, resetStudioStats, writePref } from "@/lib/ai/studio";
+import { sagaRequest, type Saga } from "@/lib/ai/saga";
 import { useWorldTheme } from "@/lib/theme";
 import { Minimap } from "./Minimap";
+import { squadName } from "@/lib/squad";
 
 /** Online play: the server owns the state; this client controls only its own seats. */
 export interface OnlineBinding {
@@ -61,7 +65,16 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const [moreOpen, setMoreOpen] = useState(false);
   useWorldTheme(pack);
   const narrator = useNarrator(pack);
-  const observe = narrator.observe;
+  const { observe, say, available: aiReady } = narrator;
+  // AI Rivals: bots choose their moves with Bitdeer and say why, in character.
+  const [rivals, setRivalsState] = useState(true);
+  const setRivals = useCallback((v: boolean) => { setRivalsState(v); writePref("rival", v); }, []);
+  const [oracleBusy, setOracleBusy] = useState(false);
+  const [saga, setSaga] = useState<Saga | "loading" | null>(null);
+  useEffect(() => {
+    setRivalsState(readPref("rival"));
+    resetStudioStats();
+  }, []);
   const [muted, setMute] = useState(isMuted());
   const [fast, setFast] = useState(false);
   const [showWin, setShowWin] = useState(false);
@@ -215,13 +228,50 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   }, [online, online?.error, pushToast]);
 
   // Bots take their turns on their own (offline only; the server runs them online).
+  // With AI Rivals on, Bitdeer picks among the legal moves while the bot "thinks";
+  // a slow or invalid answer falls back to the built-in bot.
   useEffect(() => {
     if (online || !renderer || busy || view.phase === "over") return;
     const p = view.players[view.turn];
     if (!p.bot) return;
-    const t = setTimeout(() => act(botAction(pack, stateRef.current)), fast ? 250 : 1000);
-    return () => clearTimeout(t);
-  }, [online, renderer, busy, view, act, pack, fast]);
+    let dead = false;
+    const think = new Promise((res) => setTimeout(res, fast ? 250 : 1000));
+    const smart = aiReady && rivals && view.phase === "move" && view.moves.length > 1;
+    const brain = smart ? askRival(pack, stateRef.current, "pick", 3500) : Promise.resolve(null);
+    void Promise.all([think, brain]).then(([, ai]) => {
+      if (dead) return;
+      if (ai) {
+        if (ai.say) say(ai.say, p.seat);
+        void act({ type: "move", index: ai.pick });
+      } else {
+        void act(botAction(pack, stateRef.current));
+      }
+    });
+    return () => { dead = true; };
+  }, [online, renderer, busy, view, act, pack, fast, aiReady, rivals, say]);
+
+  const askOracle = useCallback(async () => {
+    const s = stateRef.current;
+    const at = s.events.length;
+    setOracleBusy(true);
+    const ai = await askRival(pack, s, "advise", 8000);
+    setOracleBusy(false);
+    // The turn may have moved on while the Oracle was thinking.
+    if (!ai || stateRef.current.events.length !== at) return;
+    say(ai.say || "This path is your best chance.", undefined, "oracle");
+    rendererRef.current?.showAdvice(ai.pick);
+  }, [pack, say]);
+
+  // When the game ends, Bitdeer retells it as a legend for the victory screen.
+  useEffect(() => {
+    if (view.phase !== "over") {
+      if (saga) setSaga(null); // online rematch reuses this screen
+      return;
+    }
+    if (saga || !aiReady) return;
+    setSaga("loading");
+    void callStudio<Saga>("saga", "/api/saga", sagaRequest(pack, stateRef.current), 35_000).then((j) => setSaga(j?.story ? j : null));
+  }, [view.phase, saga, aiReady, pack]);
 
   // Highlight legal destinations for humans.
   useEffect(() => {
@@ -247,9 +297,10 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
 
   const cur = view.players[view.turn];
   const cc = character(pack, cur.character);
+  const squad = cur.pieces.length > 1;
   const humanTurn = isMine(view.turn) && view.phase !== "over";
   const curLabel = online?.label(view.turn);
-  const waitingOn = curLabel?.name && !curLabel.covering ? `— ${curLabel.name} is choosing…` : "is plotting…";
+  const waitingOn = curLabel?.name && !curLabel.covering ? `· ${curLabel.name} is choosing…` : "is plotting…";
   const canRoll = humanTurn && view.phase === "roll" && !busy;
   const stormAt = pack.rules.stormRound[view.players.length as 2 | 3 | 4];
   const nextEv = view.nextEvent ? pack.events?.[view.nextEvent.index] : undefined;
@@ -352,23 +403,36 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
         <NarratorTicker pack={pack} state={view} line={narrator.line} />
       </div>
       <AnimatePresence>
-        {aiOpen && <ModelStudioPanel stats={narrator.stats} available={narrator.available} on={narrator.on} onToggle={narrator.setOn} onClose={() => setAiOpen(false)} />}
+        {aiOpen && (
+          <ModelStudioPanel narratorOn={narrator.on} onNarrator={narrator.setOn} rivals={rivals} onRivals={setRivals}
+            offline={!online} onClose={() => setAiOpen(false)} />
+        )}
       </AnimatePresence>
 
       {/* Action dock */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 p-2 sm:p-4"
         style={{ paddingBottom: "max(env(safe-area-inset-bottom), 8px)" }}>
         <div className="pointer-events-auto">
+          {humanTurn && view.phase === "move" && view.moves.length > 1 && aiReady && !busy && (
+            <button onClick={() => void askOracle()} disabled={oracleBusy}
+              className="glass mb-2 flex items-center gap-1.5 rounded-xl border-amber-300/50 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-white/10 disabled:opacity-70 sm:text-sm"
+              title="Bitdeer reads the board and recommends a move">
+              <span className={oracleBusy ? "animate-spin" : ""}>✦</span>
+              {oracleBusy ? "The Oracle is reading the board…" : "Ask the Oracle"}
+            </button>
+          )}
           <AnimatePresence mode="wait">
             <motion.div key={`${view.turn}-${view.phase}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               className={`glass mb-2 w-fit rounded-xl px-3 py-1.5 text-xs sm:text-sm ${portrait ? "max-w-[220px]" : ""}`}>
-              <span className="font-display font-bold" style={{ color: cc.color }}>{cc.name}</span>{" "}
+              <span className="font-display font-bold" style={{ color: cc.color }}>{squadName(cc)}</span>{" "}
               <span className="text-white/80">
-                {view.phase === "over" ? "has won!" : !humanTurn ? waitingOn : view.phase === "roll" ? (pick2 ? "— cast an ability or roll both dice" : "— cast an ability or roll") : pick2 ? `— pick a die: ${rolled}` : `— choose a glowing tile (${view.roll})`}
+                {view.phase === "over" ? "has won!" : !humanTurn ? waitingOn
+                  : view.phase === "roll" ? (pick2 ? "· cast a power or roll both dice" : "· cast a power or roll")
+                  : pick2 ? `· pick a die: ${rolled}` : squad ? `· move any piece to a glowing tile (${view.roll})` : `· choose a glowing tile (${view.roll})`}
               </span>
             </motion.div>
           </AnimatePresence>
-          {humanTurn && <AbilityBar pack={pack} state={view} busy={busy} controllable onUse={(wch) => void act({ type: "ability", which: wch })} compact={!desktop} />}
+          {humanTurn && <AbilityBar pack={pack} state={view} busy={busy} controllable onUse={(wch, piece) => void act({ type: "ability", which: wch, piece })} compact={!desktop} />}
         </div>
         <motion.button
           disabled={!canRoll}
@@ -396,7 +460,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       <Cinematic pack={pack} state={view} e={cine} />
       <WorldEventBanner pack={pack} e={worldEv} />
       <LogDrawer pack={pack} state={view} open={logOpen} onClose={() => setLogOpen(false)} />
-      {showWin && <Victory pack={pack} state={view} onHome={onExit} onRematch={online ? online.onRematch : onRematch} label={online?.label} />}
+      {showWin && <Victory pack={pack} state={view} onHome={onExit} onRematch={online ? online.onRematch : onRematch} label={online?.label} saga={saga} />}
       {online && online.conn !== "open" && (
         <div className="glass absolute left-1/2 top-20 z-40 -translate-x-1/2 rounded-full px-4 py-2 text-sm text-amber-200" role="status">
           {online.conn === "offline" ? "Connection lost. Retrying…" : "Reconnecting…"}

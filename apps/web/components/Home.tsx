@@ -1,5 +1,6 @@
 "use client";
-import type { ThemePack, TileTypeDef } from "@ludo/engine";
+import { members, type CharacterDef, type ThemePack, type TileTypeDef } from "@ludo/engine";
+import { memberAsCharacter, portraitOf } from "@/lib/squad";
 import { motion } from "motion/react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -56,7 +57,7 @@ function WorldShelf({ worlds, selected, onSelect, onChanged }: {
                 <div className="mt-2 flex flex-wrap gap-1">
                   {ruleTags(w.pack).map((t) => <span key={t} className="rounded-full bg-white/[.07] px-2 py-0.5 text-[10px] text-white/70">{t}</span>)}
                 </div>
-                <div className="mt-2 text-[10px] uppercase tracking-[.2em] text-muted">{w.builtIn ? "Original" : "AI-forged"}{on ? " · selected" : ""}</div>
+                {!w.builtIn && <div className="mt-2 text-[10px] uppercase tracking-[.2em] text-muted">Forged by AI</div>}
               </button>
               {!w.builtIn && (
                 <div className="mt-2 flex gap-3 text-[11px]">
@@ -76,6 +77,54 @@ function WorldShelf({ worlds, selected, onSelect, onChanged }: {
         </Link>
       </div>
     </section>
+  );
+}
+
+function PowerRow({ kind, name, text, color }: { kind: string; name: string; text: string; color: string }) {
+  return (
+    <div className="rounded-lg bg-white/[.04] px-3 py-2">
+      <dt className="text-[10px] font-semibold uppercase tracking-[.2em]" style={{ color: kind === "Ultimate" || kind === "Crown power" ? "var(--gold)" : color }}>{kind} · <span className="font-display normal-case tracking-normal text-white">{name}</span></dt>
+      <dd className="mt-0.5 text-white/70">{text}</dd>
+    </div>
+  );
+}
+
+/** A squad: its shared passive and crown power, then each legend with its own power. */
+function HouseCard({ pack, c }: { pack: ThemePack; c: CharacterDef }) {
+  return (
+    <div className="glass rounded-2xl p-5" style={{ boxShadow: `inset 0 1px 0 ${c.color}55` }}>
+      <div className="flex items-center gap-3">
+        <div className="flex -space-x-3">
+          {members(c).map((_, i) => {
+            const m = memberAsCharacter(c, i);
+            return <Emblem key={m.id} c={m} size={i ? 44 : 56} glow={!i} portrait={portraitOf(pack, m)} />;
+          })}
+        </div>
+        <div className="min-w-0">
+          <div className="font-display truncate text-xl font-bold" style={{ color: c.color }}>{c.house ?? c.name}</div>
+          <div className="text-xs uppercase tracking-[.2em] text-muted">{c.element} · {c.role}</div>
+        </div>
+      </div>
+      <dl className="mt-3 space-y-2 text-sm">
+        <PowerRow kind="House passive" name={c.passive.name} text={c.passive.description} color={c.color} />
+        <PowerRow kind="Crown power" name={c.ultimate.name} text={c.ultimate.description} color={c.color} />
+      </dl>
+      <div className="mt-3 space-y-2">
+        {members(c).map((_, i) => {
+          const m = memberAsCharacter(c, i);
+          return (
+            <div key={m.id} className="flex gap-3 rounded-xl bg-white/[.03] p-3">
+              <Emblem c={m} size={40} portrait={portraitOf(pack, m)} />
+              <div className="min-w-0 text-sm">
+                <div><span className="font-display font-bold" style={{ color: c.color }}>{m.name}</span> <span className="text-xs text-muted">{m.title}</span></div>
+                <p className="mt-0.5 text-xs italic text-white/60">{m.bio}</p>
+                <p className="mt-1 text-white/80"><span className="font-semibold text-white">{m.active.name}.</span> {m.active.description} <span className="text-xs text-muted">Cooldown {m.active.cooldown ?? 3}.</span></p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -123,7 +172,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
       <Backdrop pack={pack} scene={theme.scene} />
       <main className="relative mx-auto max-w-6xl px-4 pb-24 pt-[max(env(safe-area-inset-top),24px)] sm:px-8">
         <nav className="flex flex-wrap items-center justify-between gap-3 py-2">
-          <div className="font-display text-sm font-bold tracking-[.35em] text-muted">AI · LUDO</div>
+          <div className="font-display text-sm font-bold tracking-[.35em] text-muted">DICEBOUND</div>
           <div className="flex items-center gap-2">
             {tuned && <span className="rounded-full bg-gold/15 px-3 py-1 text-xs text-gold">Custom tuning on</span>}
             {!party && <Link href="/lab" className="rounded-full border border-white/10 px-3 py-1 text-xs text-muted transition hover:border-white/30 hover:text-ink">Balance Lab</Link>}
@@ -147,7 +196,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
               <Link href={lobbyUrl(pack.id, "host")} className={`${primaryButton} text-center`}>Create room</Link>
               <Link href={lobbyUrl(pack.id, "join")} className={`${lobbyButton} grid place-items-center text-center`}>Join friends</Link>
             </div>
-            <p className="mt-3 text-xs text-muted">Share one invite link. Everyone joins, readies up, and plays on their own device. 2–4 players.</p>
+            <p className="mt-3 text-xs text-muted">Share one invite link. Everyone joins, readies up, and plays on their own device. 2 to 4 players.</p>
           </div>
           <div aria-hidden="true">{party
             ? <img src="/party-ludo/party-lounge-v1.png" alt="" className="aspect-square w-full rounded-2xl object-cover" />
@@ -170,7 +219,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
             <section className="mt-14" aria-labelledby="how">
               <h2 id="how" className="font-display text-2xl font-bold">How {title} plays</h2>
               <p className="mt-1 text-sm text-muted">Every world has its own rules. Here are this one's.</p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {ruleCards(pack).map((r) => (
                   <div key={r.key} className="glass rounded-2xl p-4">
                     <div className="flex items-center gap-2">
@@ -184,12 +233,13 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
             </section>
 
         <section className="mt-14">
-          <h2 className="font-display text-2xl font-bold">The Champions</h2>
+          <h2 className="font-display text-2xl font-bold">{chars.some((c) => c.squad?.length) ? "The Houses" : "The Champions"}</h2>
+          {chars.some((c) => c.squad?.length) && <p className="mt-1 text-sm text-muted">Every player leads a whole house. Each legend brings its own power; the house shares one passive and one crown power.</p>}
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            {chars.map((c) => (
+            {chars.map((c) => (c.squad?.length ? <HouseCard key={c.id} pack={pack} c={c} /> : (
               <div key={c.id} className="glass rounded-2xl p-5" style={{ boxShadow: `inset 0 1px 0 ${c.color}55` }}>
                 <div className="flex items-center gap-4">
-                  <Emblem c={c} size={64} glow portrait={pack.art.portraits?.[c.id]} />
+                  <Emblem c={c} size={64} glow portrait={portraitOf(pack, c)} />
                   <div>
                     <div className="font-display text-xl font-bold" style={{ color: c.color }}>{c.name}</div>
                     <div className="text-xs uppercase tracking-[.2em] text-muted">{c.title} · {c.role}</div>
@@ -198,14 +248,11 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
                 <p className="mt-3 text-sm italic text-white/70">{c.bio}</p>
                 <dl className="mt-3 space-y-2 text-sm">
                   {[["Passive", c.passive.name, c.passive.description], ["Ability", c.active.name, c.active.description], ["Ultimate", c.ultimate.name, c.ultimate.description]].map(([k, n, d]) => (
-                    <div key={k} className="rounded-lg bg-white/[.04] px-3 py-2">
-                      <dt className="text-[10px] font-semibold uppercase tracking-[.2em]" style={{ color: k === "Ultimate" ? "var(--gold)" : c.color }}>{k} · <span className="font-display normal-case tracking-normal text-white">{n}</span></dt>
-                      <dd className="mt-0.5 text-white/70">{d}</dd>
-                    </div>
+                    <PowerRow key={k} kind={k} name={n} text={d} color={c.color} />
                   ))}
                 </dl>
               </div>
-            ))}
+            )))}
           </div>
         </section>
 

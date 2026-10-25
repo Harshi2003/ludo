@@ -196,12 +196,12 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
   const canRoll = state.phase === 'roll' && !busy && allowed && (ready || boardError);
   const activeColor = partyPack.characters[state.turn].color;
   return <main ref={stage} onClickCapture={e => { if (!remote && (e.target as HTMLElement).closest('button,a,summary')) sfx.click(); }} className="fixed inset-0 isolate overflow-hidden bg-bg">
-    <div ref={host} className="absolute inset-0" aria-label="Party Ludo board" />
+    <div ref={host} className="absolute inset-0" aria-label="Party board" />
     <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(ellipse at center, transparent 55%, rgba(3,2,10,.65))' }} />
     <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start gap-2 p-2 sm:gap-3 sm:p-3" style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}>
       <div className="pointer-events-auto flex items-center gap-2">
         <button title="Leave game" aria-label="Leave game" disabled={busy} onClick={onExit} className="glass grid h-10 w-10 place-items-center rounded-xl text-lg">‹</button>
-        <div className="glass hidden rounded-xl px-3 py-1.5 sm:block"><h1 className="font-display title-gradient text-sm font-bold">Party Ludo</h1><p className="text-[10px] uppercase tracking-[.2em] text-muted">Sip &amp; Roll</p></div>
+        <div className="glass hidden rounded-xl px-3 py-1.5 sm:block"><h1 className="font-display title-gradient text-sm font-bold">Afterglow</h1><p className="text-[10px] uppercase tracking-[.2em] text-muted">Sip &amp; Roll</p></div>
       </div>
       <div className={`glass pointer-events-auto hidden h-12 min-w-0 flex-1 overflow-hidden rounded-xl px-2 py-1 ${portrait ? '' : 'md:block'}`}><PartyMinimap pack={partyPack} state={partyRendererState(state)} renderer={renderer.current} /></div>
       <div className="pointer-events-auto ml-auto flex flex-wrap items-center justify-end gap-1.5">

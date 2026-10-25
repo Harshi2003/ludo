@@ -110,7 +110,7 @@ export class PartyBoardRenderer extends BoardCamera {
     r.build(state);
     r.bindInput();
     r.app.ticker.add((t) => r.tick(t.deltaMS));
-    r.resetCamera(state.players[state.turn].tile, true);
+    r.resetCamera(state.players[state.turn].pieces[0].tile, true);
     return r;
   }
 
@@ -364,7 +364,7 @@ export class PartyBoardRenderer extends BoardCamera {
     body.addChild(orb, g, spec, shield, status);
     root.addChild(ring, aura, shadow, body);
     this.tokensLayer.addChild(root);
-    return { seat, root, body, aura, ring, shield, status, tile: p.tile, color: c.color };
+    return { seat, root, body, aura, ring, shield, status, tile: p.pieces[0].tile, color: c.color };
   }
 
   // ─── Camera ────────────────────────────────────────────────────────────
@@ -522,9 +522,9 @@ export class PartyBoardRenderer extends BoardCamera {
     const moves: Promise<void>[] = [];
     for (const p of state.players) {
       const tk = this.tokens[p.seat];
-      if (tk.tile !== p.tile) {
-        tk.tile = p.tile;
-        if (animate) moves.push(this.flyToken(tk, p.tile, 700));
+      if (tk.tile !== p.pieces[0].tile) {
+        tk.tile = p.pieces[0].tile;
+        if (animate) moves.push(this.flyToken(tk, p.pieces[0].tile, 700));
       }
     }
     await Promise.all(moves);
@@ -535,7 +535,7 @@ export class PartyBoardRenderer extends BoardCamera {
   private updateStatus(state: GameState) {
     for (const p of state.players) {
       const tk = this.tokens[p.seat];
-      tk.shield.visible = !!p.shield;
+      tk.shield.visible = !!p.pieces[0].shield;
       tk.status.removeChildren().forEach((c) => c.destroy());
       let x = TOKEN_R * 0.9;
       const badge = (glyph: "snowflake" | "eye", color: number) => {

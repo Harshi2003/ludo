@@ -8,12 +8,14 @@ const glyphs: Glyph[] = ['question', 'bolt', 'crown', 'eye', 'heart'];
 const bases: TileBase[] = ['mystery', 'speed', 'swap', 'elemental', 'shield'];
 export const partyPack: ThemePack = structuredClone(magicPack);
 partyPack.id = 'party-ludo';
+// Party plays by its own card rules; drop the squad battle rules it would otherwise inherit.
+partyPack.rules = { ...partyPack.rules, capture: undefined, winAt: undefined, bondMarch: undefined };
 partyPack.art.backgroundUrl = '/party-ludo/party-lounge-v1.png';
-partyPack.world = { name: 'Party Ludo: Sip & Roll', tagline: 'Roll. Laugh. Keep it optional.',
+partyPack.world = { name: 'Afterglow: Sip & Roll', tagline: 'Roll. Laugh. Keep it optional.',
   story: 'Move through a party of funny questions, quick challenges, and group surprises.', finish: 'Party Finale', startName: 'The Meet-Up' };
 const zones = ['The Warm-Up', 'Laughing Lane', 'Spotlight Crossing', 'Afterparty Avenue', 'Finale Walk'];
 partyPack.zones = partyPack.zones.map((z, i) => ({ ...z, name: zones[i], description: 'Roll into the next party challenge.' }));
-partyPack.characters = partyPack.characters.map((c, i) => ({ ...c, id: `party-${i}`, name: TOKEN_NAMES[i], title: 'Party guest', bio: 'Here for good company and a little friendly competition.' }));
+partyPack.characters = partyPack.characters.map(({ squad: _squad, house: _house, ...c }, i) => ({ ...c, id: `party-${i}`, name: TOKEN_NAMES[i], title: 'Party guest', bio: 'Here for good company and a little friendly competition.' }));
 partyPack.tiles = [
   { id: 'safe', name: 'Safe', description: 'Nothing happens. Take a breath.', base: 'sanctuary', category: 'structural', effects: [], weight: 0 },
   { id: 'drink', name: 'Drink', description: 'Take 1 sip of your own drink.', base: 'mystery', glyph: 'drop', category: 'neutral', effects: [], weight: 1 },

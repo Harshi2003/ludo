@@ -6,12 +6,27 @@ import {
 } from '../src';
 
 const board = (players: PlayerCount, seed = 1) => generateBoard({ players, seed, zones: pack.zones, tiles: pack.tiles });
-const game = (chars = ['inferno', 'aqua', 'terra', 'zephyr'], seed = 7) =>
-  createGame(pack, { seed, players: chars.map((character) => ({ character, bot: true })) });
-/** Puts a seat on a tile without side effects. */
-const place = (s: GameState, seat: number, tile: number) => { s.players[seat].tile = tile; };
+const funnel = pack.zones.findIndex((z) => z.type === 'funnel');
+/** A game whose single-file final zone is plain path, so test positions are exact. */
+const game = (chars = ['inferno', 'terra', 'aqua', 'zephyr'], seed = 7) => {
+  const s = createGame(pack, { seed, players: chars.map((character) => ({ character, bot: true })) });
+  for (const t of s.board.tiles) if (t.zone === funnel && !t.finish) t.type = 'path';
+  return s;
+};
+/** Puts one piece on a tile without side effects. */
+const place = (s: GameState, seat: number, tile: number, piece = 0) => { s.players[seat].pieces[piece].tile = tile; };
+const at = (s: GameState, seat: number, piece = 0) => s.players[seat].pieces[piece];
 const meshTile = (s: GameState, pred: (t: GameState['board']['tiles'][number]) => boolean) =>
   s.board.tiles.find((t) => t.zone >= 0 && !t.finish && pred(t))!;
+/** The `k`th tile of one chain through the final zone: each step follows the first `next` link. */
+const along = (s: GameState, k: number) => {
+  let t = s.board.tiles.filter((x) => x.zone === funnel).sort((a, b) => a.col - b.col || a.lane - b.lane)[0].id;
+  for (let i = 0; i < k; i++) t = s.board.tiles[t].next[0];
+  return t;
+};
+const run = (s: GameState, seat: number, effects: Parameters<typeof runEffects>[3], piece = 0) =>
+  runEffects(pack, s, seat, effects, { source: 'test', fromAbility: true, piece });
+const unshield = (s: GameState) => s.players.forEach((p) => p.pieces.forEach((q) => (q.shield = null)));
 
 describe('board generator', () => {
   for (const p of [2, 3, 4] as PlayerCount[]) {
@@ -50,6 +65,79 @@ describe('board generator', () => {
   });
 });
 
+describe('squads', () => {
+  it('gives every house three pieces on its start tile', () => {
+    const s = game();
+    for (const p of s.players) {
+      expect(p.pieces).toHaveLength(3);
+      expect(p.pieces.every((q) => q.tile === s.board.starts[p.seat])).toBe(true);
+    }
+    expect(s.players[0].pieces.map((q) => q.member)).toEqual(['inferno', 'cinder', 'vex']);
+  });
+
+  it('offers moves for every piece, and one route per bond', () => {
+    const s = game();
+    const t = along(s, 1);
+    place(s, 0, t, 0);
+    const moves = legalMoves(pack, s, 0, 2);
+    expect(new Set(moves.map((m) => m.piece))).toEqual(new Set([0, 1]));
+    // Pieces 1 and 2 share the start tile, so their routes are offered once.
+    expect(moves.some((m) => m.piece === 2)).toBe(false);
+  });
+
+  it('a bond cannot be landed on', () => {
+    const s = game();
+    const target = along(s, 2);
+    place(s, 1, target, 0);
+    place(s, 1, target, 1);
+    place(s, 0, along(s, 0));
+    expect(legalMoves(pack, s, 0, 2).some((m) => m.to === target)).toBe(false);
+  });
+
+  it('bonded pieces cast together', () => {
+    const s = game();
+    unshield(s);
+    const t = along(s, 0);
+    place(s, 0, t, 0);
+    place(s, 0, t, 1);
+    place(s, 1, along(s, 3));
+    step(pack, s, { type: 'ability', which: 'active', piece: 0 });
+    // Pyra's Dragonbreath took Grom out and Cinder's Ashwalk set the road behind on fire.
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+    expect(s.traps.length).toBeGreaterThan(0);
+    expect(s.events.some((e) => e.kind === 'ability' && e.msg.startsWith('Combo!'))).toBe(true);
+    expect(at(s, 0, 1).cooldown).toBeGreaterThan(0);
+  });
+
+  it('a house wins once two of its pieces are home', () => {
+    const s = game();
+    const near = s.board.tiles[s.board.finish].prev[0];
+    const home = (piece: number) => {
+      place(s, 0, near, piece);
+      s.turn = 0;
+      s.phase = 'move';
+      s.moves = legalMoves(pack, s, 0, 6).filter((m) => m.piece === piece);
+      step(pack, s, { type: 'move', index: s.moves.findIndex((m) => m.to === s.board.finish) });
+    };
+    home(2);
+    expect(s.winner).toBeNull();
+    expect(s.events.some((e) => e.kind === 'home')).toBe(true);
+    home(1);
+    expect(s.winner).toBe(0);
+  });
+
+  it('a bond marches together', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 1), 0);
+    place(s, 0, along(s, 1), 1);
+    s.phase = 'move';
+    s.moves = legalMoves(pack, s, 0, 2).filter((m) => m.piece === 0);
+    step(pack, s, { type: 'move', index: s.moves.findIndex((m) => m.to === along(s, 3)) });
+    expect(at(s, 0, 0).tile).toBe(along(s, 3));
+    expect(at(s, 0, 1).tile).toBe(along(s, 3));
+  });
+});
+
 describe('movement', () => {
   it('cannot move backward into a start lane', () => {
     const s = game();
@@ -74,23 +162,46 @@ describe('movement', () => {
   });
 });
 
-describe('captures', () => {
-  it('sends the victim to their last checkpoint and charges both ultimates', () => {
-    const s = game();
-    const target = meshTile(s, (t) => t.type === 'path' && t.col > 8);
-    const from = s.board.tiles[target.prev[0]];
-    place(s, 0, from.id);
-    place(s, 1, target.id);
-    s.players[1].checkpoint = s.board.starts[1];
+describe('takedowns', () => {
+  const landOn = (s: GameState, victimSeat: number) => {
+    unshield(s);
+    const target = along(s, 2);
+    place(s, 0, along(s, 1));
+    place(s, victimSeat, target);
+    at(s, victimSeat).checkpoint = along(s, 0);
     s.phase = 'move';
     s.rawRoll = 1;
     s.moves = legalMoves(pack, s, 0, 1);
-    const idx = s.moves.findIndex((m) => m.to === target.id);
-    s.players[1].shield = null;
-    step(pack, s, { type: 'move', index: idx });
-    expect(s.players[1].tile).toBe(s.board.starts[1]);
+    step(pack, s, { type: 'move', index: s.moves.findIndex((m) => m.piece === 0 && m.to === target) });
+  };
+
+  it('sends the victim all the way back to the start and charges both ultimates', () => {
+    const s = game();
+    landOn(s, 1);
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
     expect(s.players[0].captures).toBe(1);
     expect(s.players[1].ult).toBeGreaterThanOrEqual(pack.rules.ultimateCharge.captured);
+  });
+
+  it('Healing Waters: a Tide washes up at its checkpoint the first time only', () => {
+    const s = game();
+    landOn(s, 2);
+    expect(at(s, 2).tile).toBe(along(s, 0));
+    expect(at(s, 2).saved).toBe(true);
+  });
+
+  it('Phoenix Blood burns the killer back to their checkpoint', () => {
+    const s = game(['terra', 'inferno']);
+    s.round = 7; // the air tide reigns, so Grom's roll of 1 moves exactly 1
+    unshield(s);
+    place(s, 0, along(s, 3));
+    at(s, 0).checkpoint = along(s, 0);
+    place(s, 1, along(s, 4));
+    s.phase = 'move';
+    s.moves = legalMoves(pack, s, 0, 1);
+    step(pack, s, { type: 'move', index: s.moves.findIndex((m) => m.piece === 0 && m.to === along(s, 4)) });
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+    expect(at(s, 0).tile).toBe(along(s, 0));
   });
 
   it('never captures on a sanctuary', () => {
@@ -101,69 +212,222 @@ describe('captures', () => {
     const moves = legalMoves(pack, s, 0, 1).filter((m) => m.to === sanct.id);
     expect(moves.every((m) => m.captures.length === 0)).toBe(true);
   });
-
-  it("Aqua's starting bubble blocks the first capture", () => {
-    const s = game(['inferno', 'aqua']);
-    expect(s.players[1].shield?.charges).toBe(1);
-  });
 });
 
 describe('effect primitives', () => {
   const s0 = () => {
     const s = game();
-    place(s, 0, meshTile(s, (t) => t.col === 20 && t.lane === 0).id);
-    place(s, 1, meshTile(s, (t) => t.col === 22).id);
-    s.players.forEach((p) => (p.shield = null));
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 2));
+    unshield(s);
     return s;
   };
 
-  it('move pushes back along the graph', () => {
+  it('move pushes back along the graph, but Bedrock stands firm', () => {
     const s = s0();
-    const before = progress(s.board, s.players[1].tile);
-    runEffects(pack, s, 0, [{ op: 'move', target: { who: 'nearest' }, n: -3 }], { source: 't' });
-    expect(progress(s.board, s.players[1].tile)).toBe(before - 3);
+    place(s, 2, along(s, 3));
+    const before = progress(s.board, at(s, 2).tile);
+    run(s, 0, [{ op: 'move', target: { who: 'leader' }, n: -2 }]);
+    expect(progress(s.board, at(s, 2).tile)).toBe(before - 2);
+    const stone = at(s, 1).tile;
+    run(s, 0, [{ op: 'move', target: { who: 'nearest' }, n: -2 }]);
+    expect(at(s, 1).tile).toBe(stone);
   });
 
-  it('Terra is immune to pushes', () => {
+  it('shields absorb opponent powers; strip tears them off', () => {
     const s = s0();
-    s.players[1].character = 'terra';
-    const before = s.players[1].tile;
-    runEffects(pack, s, 0, [{ op: 'move', target: { who: 'nearest' }, n: -3 }], { source: 't' });
-    expect(s.players[1].tile).toBe(before);
-  });
-
-  it('shields absorb opponent abilities', () => {
-    const s = s0();
-    s.players[1].shield = { charges: 1, turns: 3 };
-    runEffects(pack, s, 0, [{ op: 'skip_turn', target: { who: 'nearest' }, n: 1 }], { source: 't', fromAbility: true });
+    at(s, 1).shield = { charges: 1, turns: 3 };
+    run(s, 0, [{ op: 'skip_turn', target: { who: 'nearest' }, n: 1 }]);
     expect(s.players[1].skip).toBe(0);
-    expect(s.players[1].shield).toBeNull();
+    expect(at(s, 1).shield).toBeNull();
+    at(s, 1).shield = { charges: 1, turns: 3 };
+    run(s, 0, [{ op: 'strip', target: { who: 'nearest' } }, { op: 'skip_turn', target: { who: 'nearest' }, n: 1 }]);
+    expect(s.players[1].skip).toBe(1);
+  });
+
+  it('kill sends a rival home and counts as a capture', () => {
+    const s = s0();
+    run(s, 0, [{ op: 'kill', target: { who: 'nearest' } }]);
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+    expect(s.players[0].captures).toBe(1);
+  });
+
+  it('pull drags the target onto the tile right in front of the caster', () => {
+    const s = s0();
+    run(s, 0, [{ op: 'pull', target: { who: 'nearest' } }]);
+    // Grom is rooted; a Gale is not.
+    expect(at(s, 1).tile).toBe(along(s, 2));
+    place(s, 3, along(s, 4));
+    run(s, 0, [{ op: 'pull', target: { who: 'leader' } }]);
+    expect(at(s, 3).tile).toBe(along(s, 1));
+  });
+
+  it('petrify freezes a piece: no moves, no harm, nobody lands there', () => {
+    const s = s0();
+    run(s, 0, [{ op: 'petrify', target: { who: 'nearest' }, turns: 2 }]);
+    expect(at(s, 1).stone).toBe(3);
+    expect(legalMoves(pack, s, 1, 3).some((m) => m.piece === 0)).toBe(false);
+    run(s, 0, [{ op: 'kill', target: { who: 'nearest' } }]);
+    expect(at(s, 1).tile).toBe(along(s, 2));
+    expect(legalMoves(pack, s, 0, 2).some((m) => m.to === along(s, 2))).toBe(false);
+  });
+
+  it('snare only lets a high roll break free', () => {
+    const s = s0();
+    run(s, 0, [{ op: 'snare', target: { who: 'nearest' }, need: 5, turns: 2 }]);
+    expect(legalMoves(pack, s, 1, 4).some((m) => m.piece === 0)).toBe(false);
+    expect(legalMoves(pack, s, 1, 5).some((m) => m.piece === 0)).toBe(true);
+  });
+
+  it('a reflecting shield sends the attacker home instead', () => {
+    const s = s0();
+    at(s, 1).shield = { charges: 1, turns: 3, reflect: true };
+    // The bounced attacker is an Ember: Phoenix Blood burns Grom back to his checkpoint, which is here.
+    at(s, 1).checkpoint = along(s, 2);
+    place(s, 0, along(s, 1));
+    s.phase = 'move';
+    s.moves = legalMoves(pack, s, 0, 1);
+    step(pack, s, { type: 'move', index: s.moves.findIndex((m) => m.piece === 0 && m.to === along(s, 2)) });
+    expect(at(s, 0).tile).toBe(s.board.starts[0]);
+    expect(at(s, 1).tile).toBe(along(s, 2));
+  });
+
+  it('revive raises fallen squadmates at their checkpoints', () => {
+    const s = game(['aqua', 'terra']);
+    at(s, 0, 1).checkpoint = along(s, 0);
+    place(s, 0, along(s, 2), 2);
+    run(s, 0, [{ op: 'revive' }], 2);
+    expect(at(s, 0, 1).tile).toBe(along(s, 0));
+  });
+
+  it('recall forms a bond, and Eye of the Storm shields the arriving Gale', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 2));
+    place(s, 0, along(s, 0), 1);
+    run(s, 0, [{ op: 'recall', range: 4 }]);
+    expect(s.players[0].pieces.filter((q) => q.tile === along(s, 2))).toHaveLength(2);
+    expect(s.events.some((e) => e.kind === 'bond')).toBe(true);
+    expect(at(s, 0, 1).shield).not.toBeNull();
+  });
+
+  it('recall behind drops the squadmate just behind the caster', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 3));
+    place(s, 0, along(s, 0), 1);
+    run(s, 0, [{ op: 'recall', range: 8, behind: true }]);
+    expect(at(s, 0, 1).tile).toBe(along(s, 2));
+  });
+
+  it('join leaps onto the nearest squadmate ahead', () => {
+    const s = game(['terra', 'zephyr']);
+    place(s, 0, along(s, 4), 0);
+    place(s, 0, along(s, 1), 2);
+    run(s, 0, [{ op: 'join', range: 8 }], 2);
+    expect(at(s, 0, 2).tile).toBe(along(s, 4));
+  });
+
+  it('scramble shuffles the caster and nearby rivals among their tiles', () => {
+    const s = game(['zephyr', 'inferno', 'aqua']);
+    place(s, 0, along(s, 2));
+    place(s, 1, along(s, 1));
+    place(s, 2, along(s, 3));
+    const tiles = () => [at(s, 0).tile, at(s, 1).tile, at(s, 2).tile];
+    const before = tiles();
+    run(s, 0, [{ op: 'scramble', range: 3 }]);
+    expect(tiles().sort()).toEqual([...before].sort());
+    expect(tiles()).not.toEqual(before);
+  });
+
+  it('trample crushes everyone on the path', () => {
+    const s = game(['terra', 'zephyr', 'aqua']);
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 1));
+    place(s, 2, along(s, 3), 1);
+    at(s, 2, 1).saved = true;
+    run(s, 0, [{ op: 'trample', n: 4 }]);
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+    expect(at(s, 2, 1).tile).toBe(s.board.starts[2]);
+    expect(at(s, 0).tile).toBe(along(s, 4));
+  });
+
+  it('blast takes out rivals around every squad piece', () => {
+    const s = game(['inferno', 'zephyr']);
+    place(s, 0, along(s, 0));
+    place(s, 0, along(s, 4), 1);
+    place(s, 1, along(s, 1));
+    place(s, 1, along(s, 5), 1);
+    place(s, 1, along(s, 3), 2);
+    run(s, 0, [{ op: 'blast', radius: 1, from: 'squad' }]);
+    expect(at(s, 1, 0).tile).toBe(s.board.starts[1]);
+    expect(at(s, 1, 1).tile).toBe(s.board.starts[1]);
+    expect(at(s, 1, 2).tile).toBe(s.board.starts[1]);
+  });
+
+  it('scorch leaves traps behind the caster', () => {
+    const s = s0();
+    place(s, 0, along(s, 3));
+    run(s, 0, [{ op: 'scorch', n: 3, turns: 2, effects: [{ op: 'send_to_checkpoint', target: { who: 'self' } }] }]);
+    expect(s.traps.map((t) => t.tile).sort()).toEqual([along(s, 0), along(s, 1), along(s, 2)].sort());
+  });
+
+  it('gather flies the nearby squad to one safe tile ahead', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 2));
+    place(s, 0, along(s, 1), 1);
+    place(s, 0, along(s, 0), 2);
+    run(s, 0, [{ op: 'gather', range: 4 }]);
+    const tiles = new Set(s.players[0].pieces.map((q) => q.tile));
+    expect(tiles.size).toBe(1);
+    expect(progress(s.board, [...tiles][0])).toBeGreaterThan(progress(s.board, along(s, 2)));
+  });
+
+  it('reverse dice only offer backward moves; six loads the next roll', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 2));
+    run(s, 0, [{ op: 'modify_dice', target: { who: 'self' }, mode: 'reverse', turns: 1 }]);
+    expect(legalMoves(pack, s, 0, 2).every((m) => m.dir === 'back')).toBe(true);
+    s.players[0].dice = null;
+    run(s, 0, [{ op: 'modify_dice', target: { who: 'self' }, mode: 'six', turns: 1 }]);
+    step(pack, s, { type: 'roll' });
+    expect(s.rawRoll).toBe(6);
   });
 
   it('swap, skip, dice, ultimate charge and extra roll', () => {
     const s = s0();
-    const [a, b] = [s.players[0].tile, s.players[1].tile];
-    runEffects(pack, s, 0, [{ op: 'swap', target: { who: 'nearest' } }], { source: 't' });
-    expect([s.players[0].tile, s.players[1].tile]).toEqual([b, a]);
-    runEffects(pack, s, 0, [
+    place(s, 3, along(s, 3));
+    const [a, b] = [at(s, 0).tile, at(s, 3).tile];
+    run(s, 0, [{ op: 'swap', target: { who: 'leader' } }]);
+    expect([at(s, 0).tile, at(s, 3).tile]).toEqual([b, a]);
+    run(s, 0, [
       { op: 'skip_turn', target: { who: 'nearest' }, n: 2 },
       { op: 'modify_dice', target: { who: 'self' }, mode: 'halve', turns: 2 },
       { op: 'charge_ultimate', target: { who: 'self' }, n: 3 },
       { op: 'extra_roll' },
-    ], { source: 't' });
-    expect(s.players[1].skip).toBe(2);
+    ]);
     expect(s.players[0].dice?.mode).toBe('halve');
     expect(s.players[0].ult).toBe(3);
     expect(s.bonusRoll).toBe(true);
   });
 
-  it('dash moves forward and captures', () => {
-    const s = s0();
-    const path = enumeratePaths(s.board, s.players[0].tile, 2, 'fwd', new Set())[0];
-    place(s, 1, path[1]);
-    runEffects(pack, s, 0, [{ op: 'dash', n: 2 }], { source: 't' });
-    expect(s.players[0].tile).toBe(path[1]);
-    expect(s.players[1].tile).toBe(s.players[1].checkpoint);
+  it('dash moves forward and takes out whoever it lands on', () => {
+    const s = game(['zephyr', 'terra']);
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 2));
+    run(s, 0, [{ op: 'dash', n: 2 }]);
+    expect(at(s, 0).tile).toBe(along(s, 2));
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+  });
+
+  it('Phoenix Blood: every Ember kill fuels another dash', () => {
+    const s = game(['inferno', 'zephyr']);
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 2));
+    run(s, 0, [{ op: 'dash', n: 2 }]);
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+    expect(progress(s.board, at(s, 0).tile)).toBeGreaterThan(progress(s.board, along(s, 2)));
   });
 
   it('portals teleport to their pair and go on cooldown', () => {
@@ -171,42 +435,36 @@ describe('effect primitives', () => {
     const portal = s.board.tiles.find((t) => t.type === 'portal')!;
     place(s, 0, portal.id);
     runEffects(pack, s, 0, [{ op: 'teleport', to: 'portal_pair' }], { source: 'portal', tile: portal.id });
-    expect(s.players[0].tile).toBe(portal.pair);
+    expect(at(s, 0).tile).toBe(portal.pair);
     expect(s.portalCd[portal.id]).toBeGreaterThan(0);
   });
 
   it('block_tile seals the path ahead of the target', () => {
     const s = s0();
-    runEffects(pack, s, 0, [{ op: 'block_tile', target: { who: 'nearest' }, turns: 1 }], { source: 't' });
-    const moves = legalMoves(pack, s, 1, 1).filter((m) => m.dir === 'fwd');
-    expect(moves).toHaveLength(0);
+    place(s, 3, along(s, 3));
+    run(s, 0, [{ op: 'block_tile', target: { who: 'leader' }, turns: 1 }]);
+    expect(legalMoves(pack, s, 3, 1).filter((m) => m.piece === 0 && m.dir === 'fwd')).toHaveLength(0);
   });
 
-  it('traps fire on the next opponent to land', () => {
+  it('ward makes a tile safe for everyone', () => {
     const s = s0();
-    runEffects(pack, s, 0, [{ op: 'place_trap', turns: 3, effects: [{ op: 'skip_turn', target: { who: 'self' }, n: 1 }] }], { source: 'trap' });
-    expect(s.traps).toHaveLength(1);
-  });
-
-  it('safe teleport moves the player ahead', () => {
-    const s = s0();
-    const before = progress(s.board, s.players[0].tile);
-    runEffects(pack, s, 0, [{ op: 'teleport', to: 'safe_ahead', range: 10 }], { source: 't' });
-    expect(progress(s.board, s.players[0].tile)).toBeGreaterThan(before);
+    place(s, 3, along(s, 1));
+    run(s, 3, [{ op: 'ward', turns: 2 }]);
+    expect(legalMoves(pack, s, 0, 1).filter((m) => m.to === along(s, 1)).every((m) => m.captures.length === 0)).toBe(true);
   });
 });
 
 describe('full games', () => {
   it('bots finish 4-player games deterministically', () => {
-    const run = () => {
+    const runGame = () => {
       const s = game(undefined, 99);
       for (let i = 0; i < 20000 && s.phase !== 'over'; i++) step(pack, s, botAction(pack, s));
       return s;
     };
-    const a = run();
+    const a = runGame();
     expect(a.phase).toBe('over');
     expect(a.winner).not.toBeNull();
-    expect(run().events.length).toBe(a.events.length);
+    expect(runGame().events.length).toBe(a.events.length);
   });
 
   it('simulates without crashing for every player count', () => {

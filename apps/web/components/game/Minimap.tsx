@@ -42,10 +42,13 @@ export function Minimap({ pack, state, renderer }: { pack: ThemePack; state: Gam
       })}
       <rect x={cam.x0} y={minY} width={Math.max(0, cam.x1 - cam.x0)} height={maxY - minY} fill="rgba(255,255,255,.07)"
         stroke="rgba(255,255,255,.55)" strokeWidth={12} rx={30} />
-      {state.players.map((p) => {
-        const t = pts[p.tile];
+      {state.players.flatMap((p) => {
         const c = character(pack, p.character);
-        return <circle key={p.seat} cx={t.x} cy={t.y} r={44} fill={c.color} stroke="#fff" strokeWidth={10} />;
+        const r = p.pieces.length > 1 ? 34 : 44;
+        return p.pieces.map((q, i) => {
+          const t = pts[q.tile];
+          return <circle key={`${p.seat}-${i}`} cx={t.x} cy={t.y} r={r} fill={c.color} stroke="#fff" strokeWidth={10} />;
+        });
       })}
     </svg>
   );

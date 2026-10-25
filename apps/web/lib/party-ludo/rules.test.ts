@@ -21,7 +21,7 @@ function lane(kind: TileKind = 'dare', c = config('back')) {
   s.players[0].tile = 5; s.players[1].tile = 6; return s;
 }
 function land(s: PartyState) {
-  s.phase = 'move'; s.card = null; s.moves = [{ dir: 'fwd', path: [4, 5], to: 5, captures: [] }]; s.players[0].tile = 3;
+  s.phase = 'move'; s.card = null; s.moves = [{ piece: 0, dir: 'fwd', path: [4, 5], to: 5, captures: [] }]; s.players[0].tile = 3;
   return partyStep(s, { type: 'move', index: 0 });
 }
 function answerCard(s: PartyState, fail = false): PartyState {

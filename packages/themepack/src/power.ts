@@ -14,15 +14,17 @@ export function scaleEffects(effects: Effect[], pct: number): Effect[] {
       out.else = scaleEffects(out.else, pct);
     }
     if (out.op === 'random') out.options = out.options.map((o) => scaleEffects(o, pct));
-    if (out.op === 'place_trap') out.effects = scaleEffects(out.effects, pct);
+    if (out.op === 'place_trap' || out.op === 'scorch') out.effects = scaleEffects(out.effects, pct);
+    if (out.op === 'magnet' || out.op === 'scramble' || out.op === 'gather' || out.op === 'join') out.range = s(out.range);
+    if (out.op === 'recall' && out.range) out.range = s(out.range);
     return out;
   });
 }
 
-/** Scales a character's active and ultimate (effects and "requires" range) in place. */
+/** Scales a character's actives (whole squad) and ultimate (effects and "requires" range) in place. */
 export function scaleCharacterPower(c: CharacterDef, pct: number) {
   if (pct === 100) return;
-  for (const a of [c.active, c.ultimate]) {
+  for (const a of [c.active, ...(c.squad ?? []).map((m) => m.active), c.ultimate]) {
     a.effects = scaleEffects(a.effects, pct);
     if (a.requires?.range) a.requires.range = Math.max(1, Math.round((a.requires.range * pct) / 100));
   }

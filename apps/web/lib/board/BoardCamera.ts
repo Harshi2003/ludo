@@ -49,7 +49,12 @@ export abstract class BoardCamera {
     this.world.rotation = portrait ? Math.PI / 2 : 0;
     this.pointers.clear();
     this.dragStart = null;
-    this.resetCamera(this.tokens[this.activeSeat]?.tile ?? this.board.starts[0], true);
+    this.resetCamera(this.seatToken(this.activeSeat)?.tile ?? this.board.starts[0], true);
+  }
+
+  /** The token the camera follows for a seat. Squads override this to follow their lead piece. */
+  protected seatToken(seat: number): CameraToken | undefined {
+    return this.tokens[seat];
   }
 
   protected viewportSize() {
@@ -63,7 +68,7 @@ export abstract class BoardCamera {
     this.insets = i;
     if (performance.now() > this.userControlUntil) {
       this.target.zoom = this.cam.zoom = this.defaultZoom();
-      if (this.portrait) this.resetCamera(this.follow?.tile ?? this.tokens[this.activeSeat]?.tile ?? this.board.starts[0], true);
+      if (this.portrait) this.resetCamera(this.follow?.tile ?? this.seatToken(this.activeSeat)?.tile ?? this.board.starts[0], true);
     }
   }
 
@@ -106,7 +111,7 @@ export abstract class BoardCamera {
   }
 
   focusSeat(seat: number) {
-    const tk = this.tokens[seat];
+    const tk = this.seatToken(seat) ?? null;
     this.follow = tk;
     this.userControlUntil = 0;
     if (this.target.zoom < this.defaultZoom() * 0.8) this.target.zoom = this.defaultZoom();

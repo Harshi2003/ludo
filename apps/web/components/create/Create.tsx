@@ -30,6 +30,7 @@ interface Progress {
   errors: string[];
   provider?: { provider: string; model: string; fallbackFrom?: string; reason?: string };
   balanceInfo?: { before: BalanceSummary; after: BalanceSummary; changes: string[] };
+  artBy?: string;
 }
 const START: Progress = { design: "idle", validate: "idle", balance: "idle", art: "idle", attempts: 0, errors: [] };
 
@@ -114,7 +115,7 @@ export default function Create() {
         case "invalid": return { ...p, design: "done", validate: "active", errors: e.errors };
         case "valid": return { ...p, design: "done", validate: "done", balance: "active", errors: [] };
         case "balance": return { ...p, balance: "done", art: "active", balanceInfo: e };
-        case "art": return { ...p, art: e.status === "painting" ? "active" : e.status === "done" ? "done" : "skipped" };
+        case "art": return { ...p, art: e.status === "painting" ? "active" : e.status === "done" ? "done" : "skipped", artBy: e.by };
         case "error": return { ...p, design: p.design === "active" ? "error" : p.design, validate: p.validate === "active" ? "error" : p.validate };
         default: return p;
       }
@@ -154,7 +155,7 @@ export default function Create() {
     { key: "design", label: "Imagining the world", detail: progress.attempts > 1 ? `Redesign ${progress.attempts - 1}` : "Story, zones, champions, powers" },
     { key: "validate", label: "Checking the rules", detail: progress.errors.length ? `Fixing ${progress.errors.length} issue${progress.errors.length > 1 ? "s" : ""}` : "Every power must be playable" },
     { key: "balance", label: "Playtesting thousands of games", detail: progress.balanceInfo ? `Spread ${(progress.balanceInfo.before.spread * 100).toFixed(0)} → ${(progress.balanceInfo.after.spread * 100).toFixed(0)} pts` : "Bots hunt for unfair powers" },
-    { key: "art", label: "Painting the realm", detail: progress.art === "skipped" ? "Using drawn art (add FAL_KEY to paint)" : "Background and portraits" },
+    { key: "art", label: "Painting the realm", detail: progress.art === "skipped" ? "Using drawn art (add BITDEER_API_KEY to paint)" : progress.artBy ? `Painted by ${progress.artBy}` : "Seedream on Bitdeer paints the background and portraits" },
   ];
   const showProgress = busy || progress.design !== "idle";
 
@@ -345,7 +346,7 @@ function Reveal({ pack, update, balance, onSave, onAgain }: {
         </div>
       )}
 
-      <p className="mt-8 text-center text-sm text-emerald-300/90">✓ Saved to your kingdoms. Find it on the home screen next to Magic Ludo.</p>
+      <p className="mt-8 text-center text-sm text-emerald-300/90">✓ Saved to your kingdoms. Find it on the home screen next to Aetherfall.</p>
       <div className="mt-3 flex flex-col gap-3 sm:flex-row">
         <button onClick={() => onSave("/")} className="font-display flex-1 rounded-2xl py-4 text-lg font-black tracking-[.12em] text-[#1a0b2e]"
           style={{ background: "linear-gradient(180deg,#fff1b8,#fcd34d 40%,#f59e0b)" }}>PLAY THIS WORLD</button>

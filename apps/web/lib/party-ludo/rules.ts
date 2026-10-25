@@ -152,7 +152,7 @@ export function partyStep(state: PartyState, action: PartyAction): PartyState {
   if (action.type === 'roll' && s.phase === 'roll') {
     s.roll = 1 + randInt(s, 6);
     s.moves = (['fwd', 'back'] as const).flatMap(dir => enumeratePaths(board, s.players[s.turn].tile, s.roll!, dir, new Set())
-      .map(path => ({ dir, path, to: path[path.length - 1], captures: [] })));
+      .map(path => ({ dir, path, to: path[path.length - 1], piece: 0, captures: [] })));
     if (s.moves.length) { s.phase = 'move'; s.message = 'Choose a highlighted stop or a destination below.'; }
     else showResult(s, 'Safe', 'No open path. Take a breather.');
   } else if (action.type === 'move' && s.phase === 'move') {
@@ -228,9 +228,10 @@ export function voteLeaders(s: PartyState): number[] {
   return counts.flatMap((n, i) => n === Math.max(...counts) ? [i] : []);
 }
 export function partyRendererState(s: PartyState): GameState {
-  return { packId: partyPack.id, board: s.board, players: s.players.map((p, seat) => ({ ...p, seat, bot: false,
-    checkpoint: s.board.starts[seat], ult: 0, cooldown: 0, shield: p.shield ? { charges: 1, turns: 999 } : null, skip: p.skipTurns, dice: null, captures: 0, timesCaptured: 0, turnStart: p.tile })),
+  return { packId: partyPack.id, board: s.board, players: s.players.map((p, seat) => ({ seat, character: p.character, bot: false,
+    pieces: [{ member: p.character, tile: p.tile, checkpoint: s.board.starts[seat], cooldown: 0, shield: p.shield ? { charges: 1, turns: 999 } : null, turnStart: p.tile, stone: 0, snare: null, saved: false }],
+    ult: 0, skip: p.skipTurns, dice: null, captures: 0, timesCaptured: 0 })),
     turn: s.turn, round: s.round, phase: s.phase === 'move' ? 'move' : s.phase === 'over' ? 'over' : 'roll',
-    roll: s.roll, rawRoll: s.roll, moves: s.moves, usedAbility: false, extraRolls: 0, traps: [], blocks: [],
+    roll: s.roll, rawRoll: s.roll, moves: s.moves, usedAbility: false, extraRolls: 0, traps: [], blocks: [], wards: [],
     portalCd: {}, rng: s.rng, events: [], winner: null, storm: false, bonusRoll: false, nextEvent: null };
 }

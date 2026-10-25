@@ -10,7 +10,7 @@ const glyph = z.enum([
 ]);
 const range = z.number().int().min(1).max(12);
 const target = z.object({
-  who: z.enum(['self', 'nearest', 'leader', 'all', 'ahead', 'behind', 'random', 'captured', 'everyone']),
+  who: z.enum(['self', 'squad', 'nearest', 'leader', 'all', 'ahead', 'behind', 'random', 'captured', 'captor', 'everyone']),
   range: range.optional(),
   side: z.enum(['ahead', 'behind']).optional(),
 }).strict();
@@ -18,16 +18,33 @@ const target = z.object({
 export const effectSchema: z.ZodType<Effect> = z.lazy(() =>
   z.discriminatedUnion('op', [
     z.object({ op: z.literal('move'), target, n: z.number().int().min(-8).max(8).refine((n) => n !== 0, 'n must not be 0') }).strict(),
-    z.object({ op: z.literal('dash'), n: z.number().int().min(1).max(6) }).strict(),
+    z.object({ op: z.literal('dash'), n: z.number().int().min(1).max(6), squad: z.boolean().optional() }).strict(),
     z.object({ op: z.literal('send_to_checkpoint'), target }).strict(),
+    z.object({ op: z.literal('kill'), target }).strict(),
     z.object({ op: z.literal('skip_turn'), target, n: z.number().int().min(1).max(2) }).strict(),
     z.object({ op: z.literal('extra_roll') }).strict(),
-    z.object({ op: z.literal('shield'), target, charges: z.number().int().min(1).max(2), turns: z.number().int().min(1).max(4) }).strict(),
+    z.object({ op: z.literal('shield'), target, charges: z.number().int().min(1).max(2), turns: z.number().int().min(1).max(4), reflect: z.boolean().optional() }).strict(),
+    z.object({ op: z.literal('strip'), target }).strict(),
+    z.object({ op: z.literal('pull'), target }).strict(),
+    z.object({ op: z.literal('magnet'), range, n: z.number().int().min(1).max(4) }).strict(),
+    z.object({ op: z.literal('scramble'), range: z.number().int().min(1).max(6) }).strict(),
+    z.object({ op: z.literal('leapfrog'), target, n: z.number().int().min(1).max(5) }).strict(),
+    z.object({ op: z.literal('trample'), n: z.number().int().min(1).max(7) }).strict(),
+    z.object({ op: z.literal('blast'), radius: z.number().int().min(1).max(3), from: z.enum(['self', 'squad']) }).strict(),
+    z.object({ op: z.literal('scorch'), n: z.number().int().min(1).max(4), turns: z.number().int().min(1).max(4), effects: z.array(effectSchema).min(1).max(3) }).strict(),
+    z.object({ op: z.literal('petrify'), target, turns: z.number().int().min(1).max(3) }).strict(),
+    z.object({ op: z.literal('snare'), target, need: z.number().int().min(2).max(6), turns: z.number().int().min(1).max(4) }).strict(),
+    z.object({ op: z.literal('ward'), turns: z.number().int().min(1).max(4) }).strict(),
+    z.object({ op: z.literal('revive') }).strict(),
+    z.object({ op: z.literal('recall'), range: range.optional(), behind: z.boolean().optional() }).strict(),
+    z.object({ op: z.literal('swap_ally') }).strict(),
+    z.object({ op: z.literal('join'), range }).strict(),
+    z.object({ op: z.literal('gather'), range }).strict(),
     z.object({ op: z.literal('swap'), target }).strict(),
     z.object({ op: z.literal('teleport'), to: z.enum(['portal_pair', 'safe_ahead']), range: z.number().int().min(3).max(12).optional() }).strict(),
     z.object({ op: z.literal('place_trap'), turns: z.number().int().min(1).max(4), effects: z.array(effectSchema).min(1).max(3) }).strict(),
     z.object({ op: z.literal('block_tile'), target, turns: z.number().int().min(1).max(2) }).strict(),
-    z.object({ op: z.literal('modify_dice'), target, mode: z.enum(['halve', 'max3', 'plus1']), turns: z.number().int().min(1).max(3) }).strict(),
+    z.object({ op: z.literal('modify_dice'), target, mode: z.enum(['halve', 'max3', 'plus1', 'six', 'double', 'reverse']), turns: z.number().int().min(1).max(3) }).strict(),
     z.object({ op: z.literal('charge_ultimate'), target, n: z.number().int().min(1).max(5) }).strict(),
     z.object({ op: z.literal('steal_charge'), target, n: z.number().int().min(1).max(5) }).strict(),
     z.object({ op: z.literal('rewind'), target }).strict(),
@@ -57,7 +74,18 @@ const passive = z.object({
   startShield: z.number().int().min(0).max(2).optional(),
   diceFloor: z.number().int().min(1).max(3).optional(),
   slopeImmune: z.boolean().optional(),
-  triggers: z.array(z.object({ on: z.enum(['capture', 'captured', 'turn_start']), effects: effects.min(1) }).strict()).max(2).optional(),
+  secondLife: z.boolean().optional(),
+  diceImmune: z.boolean().optional(),
+  triggers: z.array(z.object({ on: z.enum(['capture', 'captured', 'turn_start', 'bond']), effects: effects.min(1) }).strict()).max(2).optional(),
+}).strict();
+
+const squadMember = z.object({
+  id: slug,
+  name: z.string().min(2).max(24),
+  title: z.string().min(2).max(48),
+  bio: z.string().min(10).max(240),
+  glyph: glyph.optional(),
+  active: ability.extend({ cooldown: z.number().int().min(1).max(8) }),
 }).strict();
 
 const character = z.object({
@@ -69,6 +97,8 @@ const character = z.object({
   color: hex,
   bio: z.string().min(10).max(240),
   glyph: glyph.optional(),
+  house: z.string().min(2).max(32).optional(),
+  squad: z.array(squadMember).max(2).optional(),
   passive,
   active: ability.extend({ cooldown: z.number().int().min(1).max(8) }),
   ultimate: ability.extend({ cost: z.number().int().min(4).max(14) }),
@@ -123,9 +153,11 @@ export const themePackSchema = z.object({
     ultimateCharge: z.object({ turn: z.number().int().min(0).max(3), capture: z.number().int().min(0).max(5), captured: z.number().int().min(0).max(6) }).strict(),
     eventEvery: z.number().int().min(3).max(10).optional(),
     dice: z.enum(['one', 'pick2']).optional(),
+    winAt: z.number().int().min(1).max(3).optional(),
+    bondMarch: z.boolean().optional(),
     movement: z.enum(['both', 'forward']).optional(),
     capture: z.object({
-      mode: z.enum(['checkpoint', 'tow', 'stun']),
+      mode: z.enum(['checkpoint', 'start', 'tow', 'stun']),
       back: z.number().int().min(2).max(10).optional(),
       steal: z.number().int().min(0).max(4).optional(),
     }).strict().optional(),
@@ -170,7 +202,8 @@ export function validatePack(input: unknown): ValidationResult {
   dup(p.tiles.map((t) => t.id), 'tile');
   dup(p.characters.map((c) => c.id), 'character');
   dup(p.characters.map((c) => c.element), 'character element');
-  dup(p.characters.flatMap((c) => [c.passive.id, c.active.id, c.ultimate.id]), 'ability/passive');
+  dup(p.characters.flatMap((c) => [c.id, ...(c.squad ?? []).map((m) => m.id)]), 'character/squad member');
+  dup(p.characters.flatMap((c) => [c.passive.id, c.active.id, c.ultimate.id, ...(c.squad ?? []).map((m) => m.active.id)]), 'ability/passive');
 
   const funnels = p.zones.filter((z) => z.type === 'funnel');
   if (funnels.length !== 1 || p.zones[p.zones.length - 1].type !== 'funnel') errors.push('zones: exactly one "funnel" zone, and it must be last');
@@ -212,16 +245,20 @@ export function validatePack(input: unknown): ValidationResult {
   for (const c of p.characters) {
     walk(c.active.effects, `characters.${c.id}.active`);
     walk(c.ultimate.effects, `characters.${c.id}.ultimate`);
+    c.squad?.forEach((m) => walk(m.active.effects, `characters.${c.id}.squad.${m.id}`));
     c.passive.triggers?.forEach((tr) => walk(tr.effects, `characters.${c.id}.passive`));
     if (c.passive.triggers?.some((tr) => tr.on !== 'capture' && JSON.stringify(tr.effects).includes('"captured"'))) {
       errors.push(`characters.${c.id}.passive: target "captured" only works in an on:"capture" trigger`);
+    }
+    if (c.passive.triggers?.some((tr) => tr.on !== 'captured' && JSON.stringify(tr.effects).includes('"captor"'))) {
+      errors.push(`characters.${c.id}.passive: target "captor" only works in an on:"captured" trigger`);
     }
   }
   for (const ev of p.events ?? []) {
     walk(ev.effects, `events.${ev.id}`);
     const flat = JSON.stringify(ev.effects);
     for (const op of SELF_OPS) if (flat.includes(`"op":"${op}"`)) errors.push(`events.${ev.id}: world events can't use "${op}" (there is no caster); target players instead`);
-    if (flat.includes('"who":"self"') || flat.includes('"who":"captured"')) errors.push(`events.${ev.id}: world events have no "self"; use "everyone", "leader", "ahead", "behind" or "random"`);
+    if (['self', 'squad', 'captured', 'captor'].some((w) => flat.includes(`"who":"${w}"`))) errors.push(`events.${ev.id}: world events have no "self"; use "everyone", "leader", "ahead", "behind" or "random"`);
   }
   dup((p.events ?? []).map((e) => e.id), 'event');
   if (p.events?.length && !p.rules.eventEvery) warnings.push('events defined but rules.eventEvery is missing: they will never fire');

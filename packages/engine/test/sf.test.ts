@@ -4,7 +4,7 @@ import { createGame, legalMoves, progress, runEffects, simulate, step, WORLD, ty
 
 const game = (chars = ['byte', 'karl', 'muni', 'ada'], seed = 7) =>
   createGame(pack, { seed, players: chars.map((character) => ({ character, bot: true })) });
-const place = (s: GameState, seat: number, tile: number) => { s.players[seat].tile = tile; };
+const place = (s: GameState, seat: number, tile: number) => { s.players[seat].pieces[0].tile = tile; };
 /** A plain street tile in the given zone (by id), `k` columns in. */
 const zoneTile = (s: GameState, zoneId: string, k = 1) => {
   const z = pack.zones.findIndex((z) => z.id === zoneId);
@@ -29,13 +29,13 @@ describe('new effect ops', () => {
     const s = game();
     const start = zoneTile(s, 'chinatown', 1).id;
     const later = zoneTile(s, 'chinatown', 5).id;
-    s.players[1].turnStart = start;
+    s.players[1].pieces[0].turnStart = start;
     place(s, 1, later);
     run(s, 0, [{ op: 'rewind', target: { who: 'leader' } }]);
-    expect(s.players[1].tile).toBe(start);
+    expect(s.players[1].pieces[0].tile).toBe(start);
     // Already at (or behind) their turn start: nothing to undo.
     run(s, 0, [{ op: 'rewind', target: { who: 'leader' } }]);
-    expect(s.players[1].tile).toBe(start);
+    expect(s.players[1].pieces[0].tile).toBe(start);
   });
 
   it('hitch lands right behind the target without capturing anyone', () => {
@@ -43,24 +43,22 @@ describe('new effect ops', () => {
     const target = zoneTile(s, 'embarcadero', 3);
     place(s, 1, target.id);
     run(s, 2, [{ op: 'hitch', target: { who: 'leader' } }]);
-    expect(target.prev).toContain(s.players[2].tile);
-    expect(s.players[1].tile).toBe(target.id);
-    expect(progress(s.board, s.players[2].tile)).toBeLessThan(progress(s.board, target.id));
+    expect(target.prev).toContain(s.players[2].pieces[0].tile);
+    expect(s.players[1].pieces[0].tile).toBe(target.id);
+    expect(progress(s.board, s.players[2].pieces[0].tile)).toBeLessThan(progress(s.board, target.id));
   });
 
   it("mimic runs the target's ability as the caster, and copies can't copy", () => {
     const s = game();
     place(s, 1, zoneTile(s, 'chinatown', 4).id);
-    s.players[1].turnStart = zoneTile(s, 'chinatown', 1).id;
+    s.players[1].pieces[0].turnStart = zoneTile(s, 'chinatown', 1).id;
     s.players[0].ult = 0;
-    // Ada (3) forks Muni (2)'s Express Line: Ada dashes, not Muni.
-    const before = progress(s.board, s.players[3].tile);
-    const muniBefore = s.players[2].tile;
+    // Ada (3) forks the leader's ultimate. Karl (1) leads, so Ada vanishes into his Whiteout, not Karl.
+    const before = progress(s.board, s.players[3].pieces[0].tile);
+    const karlBefore = s.players[1].pieces[0].tile;
     run(s, 3, [{ op: 'mimic', target: { who: 'leader' }, slot: 'ultimate' }]);
-    // leader is Karl (1) here; Karl's ultimate shields the caster.
-    expect(s.players[3].shield).not.toBeNull();
-    expect(s.players[2].tile).toBe(muniBefore);
-    expect(progress(s.board, s.players[3].tile)).toBeGreaterThanOrEqual(before);
+    expect(s.players[1].pieces[0].tile).toBe(karlBefore);
+    expect(progress(s.board, s.players[3].pieces[0].tile)).toBeGreaterThan(before);
     // A forked Fork fizzles instead of recursing.
     const n = s.events.length;
     runEffects(pack, s, 3, [{ op: 'mimic', target: { who: 'nearest' }, slot: 'active' }], { source: 'x', mimic: true } as never);
@@ -108,7 +106,7 @@ describe('world events', () => {
     const s = game();
     s.players.forEach((p, i) => place(s, i, zoneTile(s, 'chinatown', i * 2 + 1).id));
     runEffects(pack, s, WORLD, [{ op: 'shield', target: { who: 'everyone' }, charges: 1, turns: 2 }], { source: 'giveaway' });
-    expect(s.players.every((p) => p.shield)).toBe(true);
+    expect(s.players.every((p) => p.pieces[0].shield)).toBe(true);
     runEffects(pack, s, WORLD, [{ op: 'skip_turn', target: { who: 'leader' }, n: 1 }], { source: 'meltdown' });
     expect(s.players[3].skip).toBe(1);
     // Self-only ops are ignored rather than crashing.
