@@ -1,64 +1,20 @@
 "use client";
-import type { CharacterDef, ThemePack, TileTypeDef } from "@ludo/engine";
+import type { ThemePack, TileTypeDef } from "@ludo/engine";
 import { motion } from "motion/react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ruleCards, ruleTags } from "@/lib/rulesText";
+import { useWorldTheme, worldTheme } from "@/lib/theme";
 import { sfx } from "@/lib/sfx";
 import { loadTuning } from "@/lib/tuning";
 import { deleteWorld, exportWorld, importWorld, splitTitle, type WorldEntry } from "@/lib/worlds";
 import { GlyphSvg } from "@/lib/glyphSvg";
 import { tileColor, tileGlyph } from "@/lib/visuals";
 import { Emblem } from "./Emblem";
+import { Backdrop, HeroArt } from "./Scenery";
 import type { GameConfig } from "./game/Game";
 
 type Seat = { character: string; bot: boolean };
-
-function Stars() {
-  const stars = useMemo(
-    () => Array.from({ length: 90 }, (_, i) => ({
-      left: `${(i * 37.7) % 100}%`, top: `${(i * 61.3) % 100}%`, size: 1 + ((i * 7) % 3), delay: `${(i % 9) * 0.7}s`,
-    })),
-    [],
-  );
-  return (
-    <div className="pointer-events-none fixed inset-0 overflow-hidden">
-      <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 70% 20%, #3b1d7a 0%, transparent 55%), radial-gradient(ellipse at 15% 80%, #0e4a6b 0%, transparent 50%), linear-gradient(180deg,#140b33,#0b0820 60%,#05030f)" }} />
-      {stars.map((s, i) => (
-        <span key={i} className="absolute rounded-full bg-white" style={{ left: s.left, top: s.top, width: s.size, height: s.size, animation: `twinkle 3.5s ${s.delay} infinite` }} />
-      ))}
-    </div>
-  );
-}
-
-function Orbit({ chars, pack }: { chars: CharacterDef[]; pack: ThemePack }) {
-  return (
-    <div className="relative mx-auto aspect-square w-[min(78vw,420px)]">
-      <div className="absolute inset-[18%] rounded-full" style={{ background: "radial-gradient(circle, rgba(240,171,252,.45), rgba(139,92,246,.15) 45%, transparent 70%)" }} />
-      <svg viewBox="0 0 200 200" className="animate-float-slow absolute inset-[24%]" aria-hidden>
-        <defs>
-          <linearGradient id="spire" x1="0" x2="1">
-            <stop offset="0" stopColor="#fdf4ff" /><stop offset=".5" stopColor="#f0abfc" /><stop offset=".5" stopColor="#a855f7" /><stop offset="1" stopColor="#6b21a8" />
-          </linearGradient>
-        </defs>
-        {[[-58, 70, 14], [-34, 110, 16], [-12, 90, 13], [0, 150, 20], [16, 100, 14], [38, 120, 16], [60, 76, 13]].map(([dx, h, w], i) => (
-          <polygon key={i} fill="url(#spire)" points={`${100 + dx - w},170 ${100 + dx - w},${170 - h * 0.78} ${100 + dx},${170 - h} ${100 + dx + w},${170 - h * 0.78} ${100 + dx + w},170`} opacity=".95" />
-        ))}
-        <ellipse cx="100" cy="172" rx="86" ry="12" fill="#3b0764" />
-        <path d="M86 18 L86 6 L93 12 L100 2 L107 12 L114 6 L114 18 Z" fill="#fcd34d" />
-      </svg>
-      <div className="animate-spin-slow absolute inset-0">
-        {chars.map((c, i) => {
-          const a = (i / chars.length) * Math.PI * 2 - Math.PI / 2;
-          return (
-            <div key={c.id} className="absolute" style={{ left: `${50 + Math.cos(a) * 44}%`, top: `${50 + Math.sin(a) * 44}%`, transform: "translate(-50%,-50%)" }}>
-              <div style={{ animation: "spin-slow 24s linear infinite reverse" }}><Emblem c={c} size={74} glow portrait={pack.art.portraits?.[c.id]} /></div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function WorldShelf({ worlds, selected, onSelect, onChanged }: {
   worlds: WorldEntry[]; selected: string; onSelect: (id: string) => void; onChanged: () => void;
@@ -96,6 +52,9 @@ function WorldShelf({ worlds, selected, onSelect, onChanged }: {
                 <div className="flex -space-x-2">{w.pack.characters.map((c) => <Emblem key={c.id} c={c} size={34} portrait={w.pack.art.portraits?.[c.id]} />)}</div>
                 <div className="font-display mt-3 truncate text-lg font-bold">{t}</div>
                 <div className="truncate text-xs text-muted">{sub ?? w.pack.world.tagline}</div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {ruleTags(w.pack).map((t) => <span key={t} className="rounded-full bg-white/[.07] px-2 py-0.5 text-[10px] text-white/70">{t}</span>)}
+                </div>
                 <div className="mt-2 text-[10px] uppercase tracking-[.2em] text-muted">{w.builtIn ? "Original" : "AI-forged"}{on ? " · selected" : ""}</div>
               </button>
               {!w.builtIn && (
@@ -119,7 +78,7 @@ function WorldShelf({ worlds, selected, onSelect, onChanged }: {
   );
 }
 
-function TileChip({ t }: { t: TileTypeDef }) {
+function TileChip({ t, cut }: { t: TileTypeDef; cut: string }) {
   const color = tileColor(t);
   return (
     <div className="flex items-start gap-3 rounded-xl bg-white/[.04] p-3">
@@ -127,7 +86,7 @@ function TileChip({ t }: { t: TileTypeDef }) {
       <svg width="34" height="34" viewBox="-20 -20 40 40" className="absolute inset-0" aria-hidden>
         <polygon points="0,-18 15.6,-9 15.6,9 0,18 -15.6,9 -15.6,-9" fill={`${color}33`} stroke={color} strokeWidth="2" />
       </svg>
-      <GlyphSvg glyph={tileGlyph(t)} color={color} cut="#1a1440" size={18} />
+      <GlyphSvg glyph={tileGlyph(t)} color={color} cut={cut} size={18} />
       </div>
       <div>
         <div className="text-sm font-semibold" style={{ color }}>{t.name}</div>
@@ -146,6 +105,8 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
 }) {
   const chars = pack.characters;
   const [title, subtitle] = splitTitle(pack.world.name);
+  useWorldTheme(pack);
+  const theme = worldTheme(pack);
   const [count, setCount] = useState(4);
   const [seats, setSeats] = useState<Seat[]>(chars.map((c, i) => ({ character: c.id, bot: i > 0 })));
   const [tuned, setTuned] = useState(false);
@@ -164,7 +125,9 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
     } catch {}
   }, [chars]);
 
-  const active = seats.slice(0, count);
+  // Right after switching worlds the seats still name the old world's champions until the effect above resets them.
+  const valid = seats.every((s) => chars.some((c) => c.id === s.character));
+  const active = (valid ? seats : chars.map((c, i) => ({ character: c.id, bot: i > 0 }))).slice(0, count);
   const cycle = (i: number) => {
     sfx.click();
     setSeats((s) => {
@@ -195,14 +158,14 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
 
   return (
     <div className="relative min-h-full">
-      <Stars />
+      <Backdrop pack={pack} scene={theme.scene} />
       <main className="relative mx-auto max-w-6xl px-4 pb-24 pt-[max(env(safe-area-inset-top),24px)] sm:px-8">
         <nav className="flex items-center justify-between py-2">
           <div className="font-display text-sm font-bold tracking-[.35em] text-muted">AI · LUDO</div>
           <div className="flex items-center gap-2">
             {tuned && <span className="rounded-full bg-gold/15 px-3 py-1 text-xs text-gold">Custom tuning on</span>}
             <Link href="/lab" className="rounded-full border border-white/10 px-3 py-1 text-xs text-muted transition hover:border-white/30 hover:text-ink">Balance Lab</Link>
-            <Link href="/create" className="rounded-full bg-primary/90 px-3 py-1 text-xs font-semibold text-white shadow-[0_0_20px_-4px_#8b5cf6] transition hover:bg-primary">✦ Forge a world</Link>
+            <Link href="/create" className="rounded-full bg-primary/90 px-3 py-1 text-xs font-semibold text-white shadow-[0_0_20px_-4px_var(--primary)] transition hover:bg-primary">✦ Forge a world</Link>
           </div>
         </nav>
 
@@ -221,7 +184,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
             </motion.p>
           </div>
           <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2, duration: 0.8 }}>
-            <Orbit chars={chars} pack={pack} />
+            <HeroArt pack={pack} scene={theme.scene} chars={chars} />
           </motion.div>
         </section>
 
@@ -255,7 +218,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
                   <div className="text-[11px] text-muted">{c.title} · {c.role}</div>
                   <button onClick={() => { sfx.click(); setSeats((x) => x.map((y, j) => (j === i ? { ...y, bot: !y.bot } : y))); }}
                     className={`mt-3 w-full rounded-lg py-1.5 text-xs font-semibold transition ${s.bot ? "bg-white/10 text-muted" : "bg-white text-[#1a0b2e]"}`}>
-                    {s.bot ? "🤖 Bot" : "🧙 Human"}
+                    {s.bot ? "🤖 Bot" : theme.human}
                   </button>
                 </motion.div>
               );
@@ -263,16 +226,32 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
           </div>
           <p className="mt-3 text-center text-xs text-muted">Tap an emblem to change champion. Several humans can share this device.</p>
           <motion.button onClick={start} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            className="font-display mt-4 w-full rounded-2xl py-4 text-lg font-black tracking-[.15em] text-[#1a0b2e] shadow-[0_10px_40px_-10px_#f59e0b]"
-            style={{ background: "linear-gradient(180deg,#fff1b8,#fcd34d 40%,#f59e0b)" }}>
-            BEGIN THE BATTLE
+            className="btn-cta font-display mt-4 w-full rounded-2xl py-4 text-lg font-black uppercase tracking-[.15em]">
+            {theme.cta}
           </motion.button>
           <Link href="/online" className="glass mt-3 block w-full rounded-2xl py-3 text-center font-semibold transition hover:bg-white/5">
             🌐 Play online with friends
           </Link>
         </motion.section>
 
-        {/* Guardians */}
+        {/* This world's rules */}
+        <section className="mt-14" aria-labelledby="how">
+          <h2 id="how" className="font-display text-2xl font-bold">How {title} plays</h2>
+          <p className="mt-1 text-sm text-muted">Every world has its own rules. Here are this one's.</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            {ruleCards(pack).map((r) => (
+              <div key={r.key} className="glass rounded-2xl p-4">
+                <div className="flex items-center gap-2">
+                  <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-white/[.07] px-1.5 text-sm text-gold">{r.icon}</span>
+                  <span className="font-display font-bold text-gold">{r.title}</span>
+                </div>
+                <p className="mt-2 text-sm leading-relaxed text-white/75">{r.text}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Champions */}
         <section className="mt-14">
           <h2 className="font-display text-2xl font-bold">The Champions</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -289,7 +268,7 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
                 <dl className="mt-3 space-y-2 text-sm">
                   {[["Passive", c.passive.name, c.passive.description], ["Ability", c.active.name, c.active.description], ["Ultimate", c.ultimate.name, c.ultimate.description]].map(([k, n, d]) => (
                     <div key={k} className="rounded-lg bg-white/[.04] px-3 py-2">
-                      <dt className="text-[10px] font-semibold uppercase tracking-[.2em]" style={{ color: k === "Ultimate" ? "#fcd34d" : c.color }}>{k} · <span className="font-display normal-case tracking-normal text-white">{n}</span></dt>
+                      <dt className="text-[10px] font-semibold uppercase tracking-[.2em]" style={{ color: k === "Ultimate" ? "var(--gold)" : c.color }}>{k} · <span className="font-display normal-case tracking-normal text-white">{n}</span></dt>
                       <dd className="mt-0.5 text-white/70">{d}</dd>
                     </div>
                   ))}
@@ -302,29 +281,17 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
         {/* Tiles */}
         <section className="mt-14">
           <h2 className="font-display text-2xl font-bold">The Tiles of {title}</h2>
-          <p className="mt-1 text-sm text-muted">Green helps, red hurts, gold is a gamble. Powers repeat across the board — you never know quite what waits ahead.</p>
+          <p className="mt-1 text-sm text-muted">Green helps, red hurts, gold is a gamble. Tiles repeat along the route, so you never know quite what waits ahead.</p>
           <div className="mt-4 grid gap-6 md:grid-cols-2">
             {groups.map(([name, list]) => (
               <div key={name}>
                 <div className="mb-2 text-xs font-semibold uppercase tracking-[.25em] text-muted">{name}</div>
-                <div className="grid gap-2">{list.map((t) => <TileChip key={t.id} t={t} />)}</div>
+                <div className="grid gap-2">{list.map((t) => <TileChip key={t.id} t={t} cut={pack.art.palette.bg} />)}</div>
               </div>
             ))}
           </div>
         </section>
 
-        <section className="mt-14 grid gap-4 text-sm text-white/75 md:grid-cols-3">
-          {[
-            ["Race", `Roll and move tile by tile from the ${pack.world.startName} to the ${pack.world.finish}. Choose your route at every fork.`],
-            ["Hunt", "Move forward or backward each roll. Land on a rival to send them back to their last checkpoint. Sanctuaries are safe."],
-            ["Unleash", "Cast your ability before rolling. Your ultimate charges each turn — faster when you capture, fastest when you're captured."],
-          ].map(([t, d]) => (
-            <div key={t} className="glass rounded-2xl p-5">
-              <div className="font-display text-lg font-bold text-gold">{t}</div>
-              <p className="mt-1">{d}</p>
-            </div>
-          ))}
-        </section>
       </main>
     </div>
   );

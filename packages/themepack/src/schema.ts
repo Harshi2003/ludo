@@ -1,4 +1,4 @@
-import type { Effect, ThemePack } from '@ludo/engine';
+import { SELF_OPS, type Effect, type ThemePack } from '@ludo/engine';
 import { z } from 'zod';
 
 // Bounds keep AI-invented powers inside what the engine (and the fun) can handle.
@@ -6,11 +6,11 @@ const slug = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/, 'lowercase-kebab id');
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, '#rrggbb colour');
 const glyph = z.enum([
   'moon', 'portal', 'bolt', 'shield', 'eye', 'snowflake', 'chevrons', 'question', 'swap', 'star', 'flame',
-  'drop', 'leaf', 'wind', 'skull', 'gem', 'crown', 'anchor', 'heart',
+  'drop', 'leaf', 'wind', 'skull', 'gem', 'crown', 'anchor', 'heart', 'cablecar', 'bridge', 'cloud', 'chip',
 ]);
 const range = z.number().int().min(1).max(12);
 const target = z.object({
-  who: z.enum(['self', 'nearest', 'leader', 'all', 'ahead', 'behind', 'random', 'captured']),
+  who: z.enum(['self', 'nearest', 'leader', 'all', 'ahead', 'behind', 'random', 'captured', 'everyone']),
   range: range.optional(),
   side: z.enum(['ahead', 'behind']).optional(),
 }).strict();
@@ -29,6 +29,10 @@ export const effectSchema: z.ZodType<Effect> = z.lazy(() =>
     z.object({ op: z.literal('block_tile'), target, turns: z.number().int().min(1).max(2) }).strict(),
     z.object({ op: z.literal('modify_dice'), target, mode: z.enum(['halve', 'max3', 'plus1']), turns: z.number().int().min(1).max(3) }).strict(),
     z.object({ op: z.literal('charge_ultimate'), target, n: z.number().int().min(1).max(5) }).strict(),
+    z.object({ op: z.literal('steal_charge'), target, n: z.number().int().min(1).max(5) }).strict(),
+    z.object({ op: z.literal('rewind'), target }).strict(),
+    z.object({ op: z.literal('hitch'), target }).strict(),
+    z.object({ op: z.literal('mimic'), target, slot: z.enum(['active', 'ultimate']) }).strict(),
     z.object({ op: z.literal('if_element'), element: z.string(), then: z.array(effectSchema).max(3), else: z.array(effectSchema).max(3) }).strict(),
     z.object({ op: z.literal('random'), options: z.array(z.array(effectSchema).min(1).max(3)).min(2).max(8) }).strict(),
   ]),
@@ -52,6 +56,7 @@ const passive = z.object({
   pushImmune: z.boolean().optional(),
   startShield: z.number().int().min(0).max(2).optional(),
   diceFloor: z.number().int().min(1).max(3).optional(),
+  slopeImmune: z.boolean().optional(),
   triggers: z.array(z.object({ on: z.enum(['capture', 'captured', 'turn_start']), effects: effects.min(1) }).strict()).max(2).optional(),
 }).strict();
 
@@ -88,7 +93,15 @@ const zone = z.object({
   length: z.number().int().min(4).max(14),
   danger: z.enum(['low', 'medium', 'high']),
   description: z.string().min(4).max(200),
-  decor: z.enum(['forest', 'falls', 'peaks', 'sky', 'crystal', 'shrine']).optional(),
+  decor: z.enum(['forest', 'falls', 'peaks', 'sky', 'crystal', 'shrine', 'city', 'bridge', 'hills', 'chinatown', 'lollipop', 'gumdrop', 'cupcake']).optional(),
+  slope: z.enum(['up', 'down']).optional(),
+}).strict();
+
+const worldEvent = z.object({
+  id: slug,
+  name: z.string().min(2).max(32),
+  description: z.string().min(8).max(160),
+  effects: effects.min(1),
 }).strict();
 
 export const themePackSchema = z.object({
@@ -108,10 +121,26 @@ export const themePackSchema = z.object({
     stormName: z.string().min(2).max(40),
     extraRollOnSix: z.boolean(),
     ultimateCharge: z.object({ turn: z.number().int().min(0).max(3), capture: z.number().int().min(0).max(5), captured: z.number().int().min(0).max(6) }).strict(),
+    eventEvery: z.number().int().min(3).max(10).optional(),
+    dice: z.enum(['one', 'pick2']).optional(),
+    movement: z.enum(['both', 'forward']).optional(),
+    capture: z.object({
+      mode: z.enum(['checkpoint', 'tow', 'stun']),
+      back: z.number().int().min(2).max(10).optional(),
+      steal: z.number().int().min(0).max(4).optional(),
+    }).strict().optional(),
+    tides: z.object({
+      every: z.number().int().min(2).max(6),
+      elements: z.array(z.string().min(1).max(24)).min(2).max(4),
+      bonus: z.number().int().min(1).max(2),
+      name: z.string().min(2).max(40),
+    }).strict().optional(),
   }).strict(),
+  events: z.array(worldEvent).min(1).max(6).optional(),
   art: z.object({
     style: z.string().min(3).max(300),
     palette: z.object({ bg: hex, surface: hex, primary: hex, accent: hex, text: hex }).strict(),
+    scene: z.enum(['fantasy', 'city', 'candy']).optional(),
     zoneColors: z.record(hex),
     backgroundUrl: z.string().optional(),
     portraits: z.record(z.string()).optional(),
@@ -188,6 +217,17 @@ export function validatePack(input: unknown): ValidationResult {
       errors.push(`characters.${c.id}.passive: target "captured" only works in an on:"capture" trigger`);
     }
   }
+  for (const ev of p.events ?? []) {
+    walk(ev.effects, `events.${ev.id}`);
+    const flat = JSON.stringify(ev.effects);
+    for (const op of SELF_OPS) if (flat.includes(`"op":"${op}"`)) errors.push(`events.${ev.id}: world events can't use "${op}" (there is no caster); target players instead`);
+    if (flat.includes('"who":"self"') || flat.includes('"who":"captured"')) errors.push(`events.${ev.id}: world events have no "self"; use "everyone", "leader", "ahead", "behind" or "random"`);
+  }
+  dup((p.events ?? []).map((e) => e.id), 'event');
+  if (p.events?.length && !p.rules.eventEvery) warnings.push('events defined but rules.eventEvery is missing: they will never fire');
+  for (const el of p.rules.tides?.elements ?? []) if (!elements.has(el)) errors.push(`rules.tides: "${el}" is not any character's element`);
+  const slopes = p.zones.filter((z) => z.slope);
+  if (slopes.some((z) => z.type === 'funnel')) errors.push('zones: the funnel zone cannot have a slope');
   if (new Set(p.characters.map((c) => c.role)).size < 4) warnings.push('roles repeat: guardians may feel samey');
 
   return errors.length ? { ok: false, errors } : { ok: true, pack: normalize(p), warnings };

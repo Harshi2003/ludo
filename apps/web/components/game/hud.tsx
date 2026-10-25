@@ -5,6 +5,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { Emblem } from "../Emblem";
+import type { NarratorLine, NarratorStats } from "@/lib/ai/narrator";
 
 // ─── Player cards ───────────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ function AbilityButton({ def, kind, color, ready, sub, onUse, compact }: {
         disabled={!ready}
         onClick={onUse}
         onContextMenu={(e) => { e.preventDefault(); setTip((t) => !t); }}
-        className={`glass relative overflow-hidden rounded-2xl text-left transition-opacity disabled:opacity-45 ${compact ? "h-14 w-[86px] px-2 py-1.5" : "h-[68px] w-[150px] px-3 py-2"}`}
+        className={`glass relative overflow-hidden rounded-2xl text-left transition-opacity disabled:opacity-45 ${compact ? "min-h-14 w-[112px] px-2 py-1.5" : "min-h-[68px] w-[160px] px-3 py-2"}`}
         style={ready ? { borderColor: ult ? "#fcd34d" : color, boxShadow: `0 0 24px -6px ${ult ? "#fcd34d" : color}` } : undefined}
       >
         {ready && ult && (
@@ -103,7 +104,7 @@ function AbilityButton({ def, kind, color, ready, sub, onUse, compact }: {
         <div className={`font-semibold uppercase tracking-[.18em] ${compact ? "text-[8px]" : "text-[9px]"}`} style={{ color: ult ? "#fcd34d" : color }}>
           {ult ? "Ultimate" : "Ability"}
         </div>
-        <div className={`font-display truncate font-bold leading-tight ${compact ? "text-[12px]" : "text-[15px]"}`}>{def.name}</div>
+        <div className={`font-display line-clamp-2 font-bold leading-[1.1] ${compact ? "text-[11.5px]" : "text-[15px]"}`} title={def.name}>{def.name}</div>
         <div className="truncate text-[10px] text-muted">{sub}</div>
       </motion.button>
       <AnimatePresence>
@@ -154,7 +155,7 @@ export interface Toast {
 
 const ICON: Partial<Record<GameEvent["kind"], string>> = {
   capture: "⚔", blocked_capture: "◈", tile: "✦", trap: "⚠", ability: "✷", ultimate: "☄", passive: "❂",
-  skip: "❄", storm: "⛈", no_moves: "∅", checkpoint: "⚑", win: "♛", effect: "✧",
+  skip: "❄", storm: "⛈", no_moves: "∅", checkpoint: "⚑", win: "♛", effect: "✧", world_event: "☁", event_warning: "⏱", tide: "≋",
 };
 
 export function Toasts({ pack, state, toasts }: { pack: ThemePack; state: GameState; toasts: Toast[] }) {
@@ -209,6 +210,107 @@ export function Cinematic({ pack, state, e }: { pack: ThemePack; state: GameStat
               <span className="font-semibold" style={{ color: c.color }}>{c.name}</span> — {def.description}
             </motion.div>
           </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ─── AI commentary (Bitdeer) ─────────────────────────────────────────────
+
+/** Sportscaster lines and in-character taunts streamed in from /api/narrate. */
+export function NarratorTicker({ pack, state, line }: { pack: ThemePack; state: GameState; line: NarratorLine | null }) {
+  const p = line?.seat !== undefined ? state.players[line.seat] : undefined;
+  const c = p ? character(pack, p.character) : undefined;
+  const color = c?.color ?? pack.art.palette.accent;
+  return (
+    <AnimatePresence>
+      {line && (
+        <motion.div key={line.id} initial={{ opacity: 0, y: 12, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -6, transition: { duration: 0.25 } }}
+          className="glass mx-auto flex max-w-[min(640px,92vw)] items-start gap-2.5 rounded-2xl px-3.5 py-2 text-sm sm:text-[15px]"
+          style={{ borderColor: `${color}77`, boxShadow: `0 0 28px -10px ${color}` }}>
+          {c ? (
+            <span className="mt-0.5 shrink-0 font-display font-bold" style={{ color }}>{c.name}:</span>
+          ) : (
+            <span className="mt-0.5 grid h-5 shrink-0 place-items-center rounded-full px-1.5 text-[9px] font-bold uppercase tracking-[.15em]" style={{ background: `${color}33`, color }}>Live</span>
+          )}
+          <span className={c ? "italic text-white/90" : "text-white/90"}>{c ? `“${line.text}”` : line.text}</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/** Judges' view of the Bitdeer integration: model, calls, latency, tokens. */
+export function ModelStudioPanel({ stats, available, on, onToggle, onClose }: {
+  stats: NarratorStats; available: boolean; on: boolean; onToggle: (v: boolean) => void; onClose: () => void;
+}) {
+  const ok = stats.calls - stats.failed;
+  const rows: [string, string][] = [
+    ["Provider", stats.provider],
+    ["Model", stats.model || "—"],
+    ["Calls this game", `${stats.calls}${stats.failed ? ` (${stats.failed} failed)` : ""}`],
+    ["Avg latency", ok ? `${Math.round(stats.totalMs / ok)} ms` : "—"],
+    ["Tokens in / out", `${stats.promptTokens.toLocaleString()} / ${stats.completionTokens.toLocaleString()}`],
+  ];
+  return (
+    <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+      className="glass absolute right-3 top-[70px] z-30 w-[300px] rounded-2xl p-4 text-sm sm:top-[84px]">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="font-display font-bold title-gradient">AI Commentary</div>
+        <button onClick={onClose} className="text-muted hover:text-white" aria-label="Close">✕</button>
+      </div>
+      {available ? (
+        <>
+          <dl className="space-y-1">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3">
+                <dt className="text-muted">{k}</dt>
+                <dd className="truncate text-right font-medium" title={v}>{v}</dd>
+              </div>
+            ))}
+          </dl>
+          <label className="mt-3 flex cursor-pointer items-center justify-between rounded-xl bg-white/5 px-3 py-2">
+            <span>Live sportscaster & taunts</span>
+            <input type="checkbox" checked={on} onChange={(e) => onToggle(e.target.checked)} className="h-4 w-4 accent-[var(--accent,#22d3ee)]" />
+          </label>
+        </>
+      ) : (
+        <p className="text-muted">Add <code className="text-white">BITDEER_API_KEY</code> to <code className="text-white">apps/web/.env.local</code> to turn on live AI commentary from Bitdeer AI Model Studio.</p>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── World event banner ─────────────────────────────────────────────────
+
+/** Full-width headline when the world itself acts (fog, quakes, outages…). */
+export function WorldEventBanner({ pack, e }: { pack: ThemePack; e: GameEvent | null }) {
+  const def = e && pack.events?.find((d) => d.id === e.source);
+  const { primary, accent } = pack.art.palette;
+  return (
+    <AnimatePresence>
+      {e && def && (
+        <motion.div key={`${e.source}-${e.msg}`} className="pointer-events-none fixed inset-0 z-40 grid place-items-center overflow-hidden"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.4 } }}>
+          <motion.div className="absolute inset-0" initial={{ backdropFilter: "blur(0px)" }} animate={{ backdropFilter: "blur(3px)" }}
+            style={{ background: "radial-gradient(ellipse at center, rgba(200,214,235,.22), rgba(5,6,14,.78) 70%)" }} />
+          <motion.div className="relative w-full py-6 text-center"
+            style={{ background: `linear-gradient(90deg, transparent, ${primary}33, ${primary}66, ${primary}33, transparent)` }}
+            initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ duration: 0.45, ease: [0.2, 0.8, 0.2, 1] }}>
+            <div className="text-[11px] font-semibold uppercase tracking-[.4em]" style={{ color: accent }}>World event</div>
+            <motion.h2 className="font-display mt-1 px-4 text-4xl font-black sm:text-6xl"
+              style={{ color: "#fff", textShadow: `0 0 28px ${primary}` }}
+              initial={{ y: 20, opacity: 0, letterSpacing: "0.3em" }} animate={{ y: 0, opacity: 1, letterSpacing: "0.02em" }}
+              transition={{ delay: 0.15, duration: 0.5 }}>
+              {def.name}
+            </motion.h2>
+            <motion.p className="mx-auto mt-2 max-w-xl px-6 text-sm text-white/85 sm:text-base"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}>
+              {def.description}
+            </motion.p>
+          </motion.div>
         </motion.div>
       )}
     </AnimatePresence>

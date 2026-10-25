@@ -7,6 +7,8 @@ import type {
 } from './types';
 
 export const ROUND_CAP = 80;
+/** Pseudo-seat for world events: targets resolve against the whole table. */
+export const WORLD = -1;
 const PORTAL_COOLDOWN = 2;
 const MAX_EXTRA_ROLLS = 2;
 const PERMANENT = 999;
@@ -30,13 +32,15 @@ export function createGame(pack: ThemePack, opts: NewGameOptions): GameState {
         tile: board.starts[seat], checkpoint: board.starts[seat],
         ult: 0, cooldown: 0,
         shield: c.passive.startShield ? { charges: c.passive.startShield, turns: PERMANENT } : null,
-        skip: 0, dice: null, captures: 0, timesCaptured: 0,
+        skip: 0, dice: null, captures: 0, timesCaptured: 0, turnStart: board.starts[seat],
       };
     }),
     turn: 0, round: 1, phase: 'roll', roll: null, rawRoll: null, moves: [],
     usedAbility: false, extraRolls: 0, traps: [], blocks: [], portalCd: {},
-    rng: opts.seed >>> 0 || 1, events: [], winner: null, storm: false, bonusRoll: false,
+    rng: opts.seed >>> 0 || 1, events: [], winner: null, storm: false, bonusRoll: false, nextEvent: null,
   };
+  scheduleEvent(pack, state, 0);
+  announceTide(pack, state);
   startTurn(pack, state, true);
   return state;
 }
@@ -53,7 +57,8 @@ export function tileDef(pack: ThemePack, state: GameState, tile: number): TileTy
   return pack.tiles.find((d) => d.id === state.board.tiles[tile].type);
 }
 
-const nameOf = (pack: ThemePack, s: GameState, seat: number) => character(pack, s.players[seat].character).name;
+const nameOf = (pack: ThemePack, s: GameState, seat: number) =>
+  seat === WORLD ? pack.world.name : character(pack, s.players[seat].character).name;
 
 function emit(state: GameState, e: GameEvent) {
   state.events.push(e);
@@ -84,15 +89,18 @@ function startTurn(pack: ThemePack, state: GameState, first = false) {
     if (p.dice && --p.dice.turns <= 0) p.dice = null;
     state.traps = state.traps.filter((t) => t.owner !== p.seat || --t.turns > 0);
     state.blocks = state.blocks.filter((b) => b.owner !== p.seat || --b.turns > 0);
+    if (p.seat === 0) worldEvents(pack, state);
+    if ((state.phase as string) === 'over') return;
     if (state.round > 1 || p.seat > 0) chargeUlt(pack, p, pack.rules.ultimateCharge.turn);
     runTriggers(pack, state, p.seat, 'turn_start', {});
+    p.turnStart = p.tile;
 
     if (p.skip > 0) {
       p.skip--;
       emit(state, { kind: 'skip', seat: p.seat, msg: `${c.name} is stunned and loses a turn` });
       continue;
     }
-    Object.assign(state, { phase: 'roll', roll: null, rawRoll: null, moves: [], usedAbility: false, extraRolls: 0, bonusRoll: false });
+    Object.assign(state, { phase: 'roll', roll: null, rawRoll: null, dice: null, rawDice: null, moves: [], usedAbility: false, extraRolls: 0, bonusRoll: false });
     emit(state, { kind: 'turn', seat: p.seat, msg: `${c.name}'s turn` });
     return;
   }
@@ -106,13 +114,58 @@ function advanceSeat(pack: ThemePack, state: GameState) {
     if (--state.portalCd[+k] <= 0) delete state.portalCd[+k];
   }
   const stormAt = pack.rules.stormRound[state.players.length as PlayerCount];
-  if (!state.storm && state.round >= stormAt) {
+  announceTide(pack, state);
+  if (!state.storm && state.round >= stormAt && pack.rules.movement !== 'forward') {
     state.storm = true;
     emit(state, { kind: 'storm', seat: -1, msg: `${pack.rules.stormName}! Backward moves are no longer possible.` });
   }
   if (state.round > ROUND_CAP) {
     const leader = [...state.players].sort((a, b) => progress(state.board, b.tile) - progress(state.board, a.tile))[0];
     win(pack, state, leader.seat, 'reached the round limit in the lead');
+  }
+}
+
+// ─── Tides ───────────────────────────────────────────────────────────────
+
+/** The element that currently reigns, if the world has tides. */
+export function reigning(pack: ThemePack, state: GameState): string | null {
+  const t = pack.rules.tides;
+  if (!t?.elements.length) return null;
+  return t.elements[Math.floor((state.round - 1) / t.every) % t.elements.length];
+}
+
+/** Rounds left in the current reign (1 = last round). */
+export function tideLeft(pack: ThemePack, state: GameState): number {
+  const t = pack.rules.tides;
+  return t ? t.every - ((state.round - 1) % t.every) : 0;
+}
+
+function announceTide(pack: ThemePack, state: GameState) {
+  const t = pack.rules.tides;
+  if (!t || (state.round - 1) % t.every !== 0) return;
+  const el = reigning(pack, state)!;
+  const who = pack.characters.filter((c) => c.element === el).map((c) => c.name).join(' & ');
+  emit(state, { kind: 'tide', seat: WORLD, source: el, msg: `${t.name}: the ${el} tide rises${who ? ` — ${who} moves +${t.bonus}` : ''}` });
+}
+
+// ─── World events ───────────────────────────────────────────────────────
+
+function scheduleEvent(pack: ThemePack, state: GameState, from: number) {
+  const every = pack.rules.eventEvery;
+  state.nextEvent = pack.events?.length && every ? { round: from + every, index: randInt(state, pack.events.length) } : null;
+}
+
+/** Runs at the top of each round: warns a round ahead, then fires and schedules the next. */
+function worldEvents(pack: ThemePack, state: GameState) {
+  const next = state.nextEvent;
+  const def = next && pack.events?.[next.index];
+  if (!next || !def) return;
+  if (state.round === next.round - 1) {
+    emit(state, { kind: 'event_warning', seat: WORLD, source: def.id, msg: `Next round: ${def.name}` });
+  } else if (state.round === next.round) {
+    emit(state, { kind: 'world_event', seat: WORLD, source: def.id, msg: `${def.name}! ${def.description}` });
+    runEffects(pack, state, WORLD, def.effects, { source: def.id });
+    scheduleEvent(pack, state, state.round);
   }
 }
 
@@ -125,10 +178,12 @@ function win(pack: ThemePack, state: GameState, seat: number, how = `reached the
 function endMove(pack: ThemePack, state: GameState) {
   if (state.phase === 'over') return;
   const p = state.players[state.turn];
-  const six = pack.rules.extraRollOnSix && state.rawRoll === 6 && state.extraRolls < MAX_EXTRA_ROLLS;
-  if ((state.bonusRoll || six) && p.skip === 0) {
+  const lucky = pack.rules.dice === 'pick2'
+    ? !!state.rawDice && state.rawDice[0] === state.rawDice[1]
+    : pack.rules.extraRollOnSix && state.rawRoll === 6;
+  if ((state.bonusRoll || (lucky && state.extraRolls < MAX_EXTRA_ROLLS)) && p.skip === 0) {
     state.extraRolls++;
-    Object.assign(state, { phase: 'roll', roll: null, rawRoll: null, moves: [], bonusRoll: false });
+    Object.assign(state, { phase: 'roll', roll: null, rawRoll: null, dice: null, rawDice: null, moves: [], bonusRoll: false });
     emit(state, { kind: 'roll', seat: p.seat, msg: `${nameOf(pack, state, p.seat)} rolls again!` });
     return;
   }
@@ -144,16 +199,31 @@ export function step(pack: ThemePack, state: GameState, action: Action): GameSta
 
   if (action.type === 'roll') {
     if (state.phase !== 'roll') throw new Error('Not time to roll');
-    const raw = 1 + randInt(state, 6);
-    let n = raw;
-    if (p.dice?.mode === 'halve') n = Math.ceil(n / 2);
-    if (p.dice?.mode === 'max3') n = Math.min(n, 3);
-    if (p.dice?.mode === 'plus1') n = n + 1;
-    n = Math.max(n, character(pack, p.character).passive.diceFloor ?? 0);
-    state.rawRoll = raw;
-    state.roll = n;
-    state.moves = legalMoves(pack, state, p.seat, n);
-    emit(state, { kind: 'roll', seat: p.seat, value: n, msg: `${nameOf(pack, state, p.seat)} rolled ${raw}${n !== raw ? ` (counts as ${n})` : ''}` });
+    const modify = (raw: number) => {
+      let n = raw;
+      if (p.dice?.mode === 'halve') n = Math.ceil(n / 2);
+      if (p.dice?.mode === 'max3') n = Math.min(n, 3);
+      if (p.dice?.mode === 'plus1') n = n + 1;
+      return Math.max(n, character(pack, p.character).passive.diceFloor ?? 0);
+    };
+    const raws = pack.rules.dice === 'pick2' ? [1 + randInt(state, 6), 1 + randInt(state, 6)] : [1 + randInt(state, 6)];
+    const ns = raws.map(modify);
+    state.rawRoll = Math.max(...raws);
+    state.roll = Math.max(...ns);
+    if (raws.length > 1) {
+      state.rawDice = raws;
+      state.dice = ns;
+      const seen = new Set<string>();
+      state.moves = [...new Set(ns)].flatMap((n) => legalMoves(pack, state, p.seat, n).map((m) => ({ ...m, die: n }))).filter((m) => {
+        const key = `${m.dir}:${m.path.join(',')}`;
+        return !seen.has(key) && !!seen.add(key);
+      });
+    } else state.moves = legalMoves(pack, state, p.seat, ns[0]);
+    const bonus = forwardBonus(pack, state, p.seat);
+    const extra = bonus ? ` · ${bonus > 0 ? '+' : ''}${bonus} going forward` : '';
+    const said = raws.map((r, i) => `${r}${ns[i] !== r ? ` (counts as ${ns[i]})` : ''}`).join(' and ');
+    const doubles = raws.length > 1 && raws[0] === raws[1] ? ' — doubles!' : '';
+    emit(state, { kind: 'roll', seat: p.seat, value: state.roll, dice: raws, msg: `${nameOf(pack, state, p.seat)} rolled ${said}${doubles}${extra}` });
     if (!state.moves.length) {
       emit(state, { kind: 'no_moves', seat: p.seat, msg: 'No path is open' });
       endMove(pack, state);
@@ -187,12 +257,29 @@ export function step(pack: ThemePack, state: GameState, action: Action): GameSta
   return state;
 }
 
+/** -1 uphill, +1 downhill, for forward moves starting on this player's tile. */
+export function slopeBonus(pack: ThemePack, state: GameState, seat: number): number {
+  const p = state.players[seat];
+  const slope = pack.zones[state.board.tiles[p.tile].zone]?.slope;
+  if (slope === 'down') return 1;
+  if (slope === 'up' && !character(pack, p.character).passive.slopeImmune) return -1;
+  return 0;
+}
+
+/** Slope plus tide: what this player adds to forward moves right now. */
+export function forwardBonus(pack: ThemePack, state: GameState, seat: number): number {
+  const t = pack.rules.tides;
+  const el = character(pack, state.players[seat].character).element;
+  return slopeBonus(pack, state, seat) + (t && reigning(pack, state) === el ? t.bonus : 0);
+}
+
 export function legalMoves(pack: ThemePack, state: GameState, seat: number, n: number): MoveOption[] {
   const p = state.players[seat];
   const blocked = blockedFor(state, seat);
-  const dirs: ('fwd' | 'back')[] = state.storm ? ['fwd'] : ['fwd', 'back'];
+  const dirs: ('fwd' | 'back')[] = state.storm || pack.rules.movement === 'forward' ? ['fwd'] : ['fwd', 'back'];
+  const slope = forwardBonus(pack, state, seat);
   return dirs.flatMap((dir) =>
-    enumeratePaths(state.board, p.tile, n, dir, blocked).map((path) => {
+    enumeratePaths(state.board, p.tile, dir === 'fwd' ? Math.max(1, n + slope) : n, dir, blocked).map((path) => {
       const to = path[path.length - 1];
       const captures = isSanctuary(pack, state, to) || state.board.tiles[to].finish
         ? []
@@ -269,12 +356,24 @@ function land(pack: ThemePack, state: GameState, seat: number, tile: number, o: 
 function capture(pack: ThemePack, state: GameState, by: number, victim: number, tile: number) {
   const a = state.players[by];
   const v = state.players[victim];
-  v.tile = v.checkpoint;
+  const rule = pack.rules.capture ?? { mode: 'checkpoint' };
+  let how = 'captures';
+  if (rule.mode === 'tow') {
+    const path = forcedPath(state.board, v.tile, -(rule.back ?? 6), new Set());
+    if (path.length) v.tile = path[path.length - 1];
+    how = 'tows';
+  } else if (rule.mode === 'stun') {
+    v.skip++;
+    how = 'traps';
+  } else v.tile = v.checkpoint;
   a.captures++;
   v.timesCaptured++;
-  chargeUlt(pack, a, pack.rules.ultimateCharge.capture);
+  const stolen = Math.min(v.ult, rule.steal ?? 0);
+  v.ult -= stolen;
+  chargeUlt(pack, a, pack.rules.ultimateCharge.capture + stolen);
   chargeUlt(pack, v, pack.rules.ultimateCharge.captured);
-  emit(state, { kind: 'capture', seat: by, targets: [victim], tile, to: v.tile, msg: `${nameOf(pack, state, by)} captures ${nameOf(pack, state, victim)}!` });
+  const tail = rule.mode === 'tow' ? ` back ${rule.back ?? 6}` : rule.mode === 'stun' ? ' in place: they lose their next turn' : '';
+  emit(state, { kind: 'capture', seat: by, targets: [victim], tile, to: v.tile, msg: `${nameOf(pack, state, by)} ${how} ${nameOf(pack, state, victim)}${tail}!${stolen ? ` (+${stolen} charge stolen)` : ''}` });
   runTriggers(pack, state, by, 'capture', { captured: victim });
   runTriggers(pack, state, victim, 'captured', {});
 }
@@ -288,6 +387,8 @@ function runTriggers(pack: ThemePack, state: GameState, seat: number, on: 'captu
   const passive = character(pack, state.players[seat].character).passive;
   for (const t of passive.triggers ?? []) {
     if (t.on !== on) continue;
+    // A turn-start aura with nobody in range stays silent instead of spamming the log.
+    if (on === 'turn_start' && t.effects.every((e) => 'target' in e && !resolveTargets(state, seat, e.target, ctx).length)) continue;
     emit(state, { kind: 'passive', seat, source: passive.id, msg: `${passive.name} activates` });
     runEffects(pack, state, seat, t.effects, { ...ctx, source: passive.id });
   }
@@ -300,14 +401,23 @@ interface Ctx {
   tile?: number;
   captured?: number;
   fromAbility?: boolean;
+  /** Set while running a copied ability, so copies can't copy. */
+  mimic?: boolean;
 }
 
+/** Ops that act on the caster's own token; world events can't use them. */
+export const SELF_OPS = new Set<Effect['op']>(['dash', 'extra_roll', 'swap', 'teleport', 'place_trap', 'if_element', 'steal_charge', 'hitch', 'mimic']);
+
 export function resolveTargets(state: GameState, seat: number, spec: TargetSpec, ctx: Partial<Ctx>): number[] {
+  if (seat === WORLD) return worldTargets(state, spec);
   const me = state.players[seat];
   if (spec.who === 'self') return [seat];
   if (spec.who === 'captured') return ctx.captured !== undefined ? [ctx.captured] : [];
   const b = state.board;
   const range = spec.range ?? Infinity;
+  if (spec.who === 'everyone') {
+    return state.players.filter((q) => q.seat === seat || distance(b, me.tile, q.tile, range) <= range).map((q) => q.seat);
+  }
   const opps = state.players
     .filter((q) => q.seat !== seat)
     .map((q) => ({ seat: q.seat, d: distance(b, me.tile, q.tile, range), prog: progress(b, q.tile) }))
@@ -330,6 +440,26 @@ export function resolveTargets(state: GameState, seat: number, spec: TargetSpec,
   }
 }
 
+function worldTargets(state: GameState, spec: TargetSpec): number[] {
+  const all = state.players.map((q) => ({ seat: q.seat, prog: progress(state.board, q.tile) })).sort((a, c) => c.prog - a.prog);
+  const median = all[Math.floor(all.length / 2)].prog;
+  switch (spec.who) {
+    case 'leader':
+      return [all[0].seat];
+    case 'ahead':
+      return all.filter((o) => o.prog > median).map((o) => o.seat);
+    case 'behind':
+      return all.filter((o) => o.prog < median).map((o) => o.seat);
+    case 'random':
+      return [pick(state, all).seat];
+    case 'all':
+    case 'everyone':
+      return all.map((o) => o.seat);
+    default:
+      return [];
+  }
+}
+
 export function runEffects(pack: ThemePack, state: GameState, seat: number, effects: Effect[], ctx: Ctx) {
   for (const e of effects) {
     if (state.phase === 'over') return;
@@ -349,6 +479,7 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
     say(`${nameOf(pack, state, q.seat)}'s shield absorbs it`, [q.seat]);
     return false;
   };
+  if (seat === WORLD && SELF_OPS.has(e.op)) return;
   const targets = 'target' in e ? resolveTargets(state, seat, e.target, ctx).map((s) => state.players[s]) : [];
 
   switch (e.op) {
@@ -467,7 +598,9 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
     case 'modify_dice':
       for (const q of targets) {
         if (!hits(q)) continue;
-        q.dice = { mode: e.mode, turns: e.turns + (q.seat === seat ? 1 : 0) };
+        // +1 because the counter ticks at the start of the target's turn. A world event at the
+        // top of the round runs after the first seat has already ticked.
+        q.dice = { mode: e.mode, turns: e.turns + (seat === WORLD && q.seat === state.turn ? 0 : 1) };
         say(`${nameOf(pack, state, q.seat)}'s dice are ${e.mode === 'plus1' ? 'blessed' : 'cursed'}`, [q.seat]);
       }
       break;
@@ -475,6 +608,53 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
     case 'charge_ultimate':
       for (const q of targets) chargeUlt(pack, q, e.n);
       break;
+
+    case 'steal_charge':
+      for (const q of targets) {
+        if (q.seat === seat || !hits(q)) continue;
+        const take = Math.min(q.ult, e.n);
+        if (!take) continue;
+        q.ult -= take;
+        chargeUlt(pack, me, take);
+        say(`${nameOf(pack, state, seat)} drains ${take} charge from ${nameOf(pack, state, q.seat)}`, [q.seat]);
+      }
+      break;
+
+    case 'rewind':
+      for (const q of targets) {
+        const back = q.turnStart ?? q.tile;
+        if (progress(b, back) >= progress(b, q.tile) || !hits(q)) continue;
+        q.tile = back;
+        emit(state, { kind: 'move', seat: q.seat, path: [back], tile: back, source: ctx.source, msg: `${nameOf(pack, state, q.seat)} is rewound to where their turn began` });
+      }
+      break;
+
+    case 'hitch': {
+      const q = targets[0];
+      if (!q) break;
+      const dest = b.tiles[q.tile].prev
+        .filter((t) => b.tiles[t].start === undefined || b.tiles[t].start === seat)
+        .sort((x, y) => progress(b, y) - progress(b, x))[0];
+      if (dest === undefined || progress(b, dest) <= progress(b, me.tile)) break;
+      emit(state, { kind: 'move', seat, path: [dest], tile: dest, source: ctx.source, msg: `${nameOf(pack, state, seat)} hitches a ride behind ${nameOf(pack, state, q.seat)}` });
+      travel(pack, state, me, [dest], 'fwd');
+      land(pack, state, seat, dest, { dir: 'fwd', capture: false, tileEffects: false });
+      break;
+    }
+
+    case 'mimic': {
+      const q = targets[0];
+      if (!q) break;
+      if (ctx.mimic) {
+        say('A copy of a copy fizzles');
+        break;
+      }
+      const c = character(pack, q.character);
+      const def = e.slot === 'active' ? c.active : c.ultimate;
+      say(`${nameOf(pack, state, seat)} copies ${c.name}'s ${def.name}`, [q.seat]);
+      runEffects(pack, state, seat, def.effects, { ...ctx, mimic: true });
+      break;
+    }
 
     case 'if_element':
       runEffects(pack, state, seat, character(pack, me.character).element === e.element ? e.then : e.else, ctx);

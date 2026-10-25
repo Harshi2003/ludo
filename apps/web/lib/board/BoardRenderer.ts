@@ -2,8 +2,8 @@ import {
   character, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
 } from "@ludo/engine";
 import { Application, Assets, Container, Graphics, Rectangle, Sprite, Text, type FederatedPointerEvent, type Texture } from "pixi.js";
-import { ELEMENT_GLYPH, tileColor, tileGlyph, zoneColor } from "../visuals";
-import { addGlow, buildIsland, decorFor } from "./decor";
+import { ELEMENT_GLYPH, sceneOf, tileColor, tileGlyph, zoneColor } from "../visuals";
+import { addGlow, buildIsland, CANDY, candyCane, decorFor, swirl } from "./decor";
 import { drawGlyph } from "./glyphs";
 import { boardExtents, COL_W, TILE_R, tilePos, wave } from "./layout";
 import { clamp, ease, glowTexture, hex, lerp, mix, orbTexture, skyTexture, sparkTexture, Tweener } from "./util";
@@ -157,8 +157,12 @@ export class BoardRenderer {
     const stage = this.app.stage;
     this.extents = boardExtents(board);
 
-    const top = mix(pack.art.palette.bg, pack.art.palette.primary, 0.22);
-    this.sky.texture = skyTexture(`#${top.toString(16).padStart(6, "0")}`, pack.art.palette.bg, "#05030f");
+    const scene = sceneOf(pack);
+    const top = `#${mix(pack.art.palette.bg, pack.art.palette.primary, 0.22).toString(16).padStart(6, "0")}`;
+    // City: night overhead fading to a sunset over the bay. Candy: berry dusk with a pink glow below.
+    this.sky.texture = scene === "city" ? skyTexture("#0a1426", "#1d2140", "#7a2e2a")
+      : scene === "candy" ? skyTexture("#3a1248", pack.art.palette.bg, "#5a1d4f")
+      : skyTexture(top, pack.art.palette.bg, "#05030f");
     stage.addChild(this.sky, this.painted, this.nebula, this.stars, this.world);
     if (pack.art.backgroundUrl) void this.loadBackground(pack.art.backgroundUrl);
 
@@ -173,12 +177,14 @@ export class BoardRenderer {
       this.nebula.addChild(s);
       this.starData.push({ s, x: Math.random(), y: Math.random(), p: 0.015, tw: 0 });
     }
-    for (let i = 0; i < 220; i++) {
+    // Fewer, dimmer stars over a lit city; candy-coloured sprinkles over the Candy Kingdom.
+    for (let i = 0; i < (scene === "city" ? 90 : 220); i++) {
       const s = new Sprite(sparkTexture());
       s.anchor.set(0.5);
       const big = Math.random() < 0.08;
       s.scale.set(big ? 0.35 + Math.random() * 0.25 : 0.1 + Math.random() * 0.14);
-      s.tint = Math.random() < 0.3 ? 0xd8c7ff : 0xffffff;
+      s.tint = scene === "candy" ? CANDY[i % CANDY.length] : Math.random() < 0.3 ? 0xd8c7ff : 0xffffff;
+      if (scene === "city") s.alpha = 0.6;
       this.stars.addChild(s);
       this.starData.push({ s, x: Math.random(), y: Math.random(), p: 0.03 + Math.random() * 0.05, tw: Math.random() * 6 });
     }
@@ -214,6 +220,7 @@ export class BoardRenderer {
         bg,
         kind: z.zone < 0 ? "shrine" : decorFor(zoneDef?.id, zoneDef?.type, zoneDef?.decor),
         seed: board.seed * 31 + i * 977,
+        scene: sceneOf(pack),
       });
       this.islandsBack.addChild(island.back);
       this.islandsFront.addChild(island.front);
@@ -238,6 +245,16 @@ export class BoardRenderer {
       label.alpha = 0.85;
       label.position.set(mid, extents.rawMinY - 195 + wave(z.from + (z.to - z.from) / 2));
       this.world.addChildAt(label, this.world.getChildIndex(this.islandsFront));
+      if (def.slope) {
+        const up = def.slope === "up";
+        const tag = new Text({
+          text: up ? "▲ UPHILL · forward −1" : "▼ DOWNHILL · forward +1",
+          style: { fontFamily: this.font, fontSize: 15, fontWeight: "700", letterSpacing: 3, fill: up ? "#fca5a5" : "#86efac", stroke: { color: pack.art.palette.bg, width: 5 } },
+        });
+        tag.anchor.set(0.5);
+        tag.position.set(mid, label.y + 30);
+        this.world.addChildAt(tag, this.world.getChildIndex(this.islandsFront));
+      }
     }
   }
 
@@ -350,6 +367,36 @@ export class BoardRenderer {
     const g = new Graphics();
     g.ellipse(0, 40, 150, 34).fill({ color: mix(col, "#0b0820", 0.65) });
     g.ellipse(0, 36, 150, 30).stroke({ width: 3, color: col, alpha: 0.5 });
+    const scene = sceneOf(this.pack);
+    if (scene === "city") this.drawBridgeTower(root, g);
+    else if (scene === "candy") this.drawSugarPalace(root, g, col);
+    else this.drawSpires(g, col);
+    // Gate arch where tokens arrive.
+    g.roundRect(-26, -30, 52, 66, 26).fill(mix(col, "#0b0820", 0.75));
+    g.roundRect(-26, -30, 52, 66, 26).stroke({ width: 3, color: 0xfff7d6, alpha: 0.8 });
+    root.addChild(g);
+
+    const crown = new Container();
+    const cg = new Graphics();
+    drawGlyph(cg, "crown", 26, 0xfcd34d, 0x0b0820);
+    addGlow(crown, 0, 0, "#fcd34d", 1.6, 0.6);
+    crown.addChild(cg);
+    crown.position.set(0, scene === "city" ? -300 : -260);
+    root.addChild(crown);
+    this.crown = crown;
+
+    const label = new Text({
+      text: this.pack.world.finish.toUpperCase(),
+      style: { fontFamily: this.font, fontSize: 20, fontWeight: "900", letterSpacing: 5, fill: 0xfff1fb },
+    });
+    label.anchor.set(0.5);
+    label.position.set(0, 96);
+    root.addChild(label);
+    this.tilesLayer.addChild(root);
+  }
+
+  /** Fantasy finish: a crystal castle of lit spires. */
+  private drawSpires(g: Graphics, col: string) {
     const spires = [
       { dx: -110, h: 120, w: 22 }, { dx: -70, h: 190, w: 28 }, { dx: -30, h: 150, w: 22 },
       { dx: 0, h: 260, w: 36 }, { dx: 34, h: 170, w: 24 }, { dx: 74, h: 210, w: 28 }, { dx: 112, h: 130, w: 22 },
@@ -364,28 +411,51 @@ export class BoardRenderer {
       // Windows
       for (let k = 1; k < s.h / 50; k++) g.roundRect(s.dx - s.w * 0.55, b - k * 44, 7, 12, 3).fill({ color: 0xfff7d6, alpha: 0.85 });
     }
-    // Gate arch where tokens arrive.
-    g.roundRect(-26, -30, 52, 66, 26).fill(mix(col, "#0b0820", 0.75));
-    g.roundRect(-26, -30, 52, 66, 26).stroke({ width: 3, color: 0xfff7d6, alpha: 0.8 });
-    root.addChild(g);
+  }
 
-    const crown = new Container();
-    const cg = new Graphics();
-    drawGlyph(cg, "crown", 26, 0xfcd34d, 0x0b0820);
-    addGlow(crown, 0, 0, "#fcd34d", 1.6, 0.6);
-    crown.addChild(cg);
-    crown.position.set(0, -260);
-    root.addChild(crown);
-    this.crown = crown;
+  /** City finish: a Golden Gate tower in International Orange, cables sweeping down to the deck. */
+  private drawBridgeTower(root: Container, g: Graphics) {
+    const io = 0xe8492a;
+    const shade = 0xa8321c;
+    addGlow(root, 0, -150, "#ff7a45", 7, 0.3);
+    for (const side of [-1, 1]) {
+      g.moveTo(side * 190, 30).quadraticCurveTo(side * 70, -60, side * 20, -262).stroke({ width: 4, color: io });
+      for (let x = 30; x < 190; x += 14) {
+        const u = (x - 20) / 170;
+        const y = (1 - u) ** 2 * -262 + 2 * (1 - u) * u * -60 + u * u * 30;
+        g.moveTo(side * x, y).lineTo(side * x, 34).stroke({ width: 1, color: io, alpha: 0.55 });
+      }
+    }
+    for (const dx of [-38, 24]) g.rect(dx, -270, 14, 306).fill(io);
+    for (const y of [-262, -200, -140, -84]) {
+      g.rect(-38, y, 76, 12).fill(shade);
+      g.rect(-24, y + 12, 48, 6).fill({ color: shade, alpha: 0.6 });
+    }
+    g.rect(-42, -282, 22, 14).fill(io);
+    g.rect(20, -282, 22, 14).fill(io);
+    for (const dx of [-31, 31]) addGlow(root, dx, -284, "#ff3b10", 0.5, 0.8);
+  }
 
-    const label = new Text({
-      text: this.pack.world.finish.toUpperCase(),
-      style: { fontFamily: this.font, fontSize: 20, fontWeight: "900", letterSpacing: 5, fill: 0xfff1fb },
+  /** Candy finish: frosted towers capped with gumdrop domes, between candy canes and lollipops. */
+  private drawSugarPalace(root: Container, g: Graphics, col: string) {
+    const towers = [{ dx: -104, h: 110, w: 20 }, { dx: -58, h: 170, w: 24 }, { dx: 0, h: 230, w: 32 }, { dx: 58, h: 170, w: 24 }, { dx: 104, h: 110, w: 20 }];
+    towers.forEach((t, i) => {
+      const b = 36;
+      g.rect(t.dx - t.w, b - t.h, t.w * 2, t.h).fill(mix(col, "#ffffff", 0.45 - i * 0.03));
+      g.rect(t.dx - t.w, b - t.h, t.w * 2, 10).fill(0xfff7fb);
+      for (let k = 0; k < 3; k++) g.circle(t.dx - t.w + 6 + k * ((t.w * 2 - 12) / 2), b - t.h + 10, 4).fill(0xfff7fb);
+      g.ellipse(t.dx, b - t.h, t.w + 5, t.w * 0.95).fill(CANDY[i % CANDY.length]);
+      g.ellipse(t.dx - t.w * 0.35, b - t.h - t.w * 0.4, t.w * 0.25, t.w * 0.15).fill({ color: 0xffffff, alpha: 0.45 });
+      for (let k = 1; k < t.h / 46; k++) g.roundRect(t.dx - 5, b - k * 40, 10, 14, 5).fill({ color: 0xfff1b8, alpha: 0.9 });
     });
-    label.anchor.set(0.5);
-    label.position.set(0, 96);
-    root.addChild(label);
-    this.tilesLayer.addChild(root);
+    for (const side of [-1, 1]) {
+      candyCane(g, side * 140, 36, 90, side < 0);
+      const lx = side * 176;
+      g.rect(lx - 2.5, -60, 5, 96).fill(0xfff7fb);
+      g.circle(lx, -64, 20).fill(CANDY[side < 0 ? 0 : 2]);
+      swirl(g, lx, -64, 20);
+    }
+    addGlow(root, 0, -150, "#ff7ac2", 6, 0.3);
   }
 
   private buildToken(seat: number, state: GameState): TokenView {
@@ -684,13 +754,16 @@ export class BoardRenderer {
     const s = new Sprite(sparkTexture());
     s.anchor.set(0.5);
     s.blendMode = "add";
-    s.tint = kind === "peaks" ? "#fdba74" : kind === "forest" ? "#bbf7d0" : color;
-    s.scale.set(0.15 + Math.random() * 0.25);
+    const fog = kind === "city" || kind === "bridge" || kind === "hills" || kind === "chinatown";
+    const sprinkle = sceneOf(this.pack) === "candy";
+    s.tint = sprinkle ? CANDY[Math.floor(Math.random() * CANDY.length)] : kind === "peaks" ? "#fdba74" : kind === "forest" ? "#bbf7d0" : fog ? "#cbd5e1" : color;
+    s.scale.set(fog ? 1.2 + Math.random() * 1.6 : 0.15 + Math.random() * 0.25);
     s.position.set(x, y);
     this.ambient.addChild(s);
-    const rise = kind === "peaks" ? -40 : kind === "falls" ? 25 : -12;
-    const life = 3 + Math.random() * 3;
-    this.particles.push({ s, vx: (Math.random() - 0.5) * 30, vy: rise, life, max: life, gravity: 0, fade: 0.8 });
+    const rise = kind === "peaks" ? -40 : kind === "falls" ? 25 : fog ? -3 : -12;
+    const life = (fog ? 6 : 3) + Math.random() * 3;
+    // Fog drifts in off the bay (left to right) instead of rising.
+    this.particles.push({ s, vx: fog ? 18 + Math.random() * 22 : (Math.random() - 0.5) * 30, vy: rise, life, max: life, gravity: 0, fade: fog ? 0.16 : 0.8 });
   }
 
   // ─── Tokens & state sync ────────────────────────────────────────────────
@@ -973,6 +1046,20 @@ export class BoardRenderer {
       case "storm":
         this.shake = 10;
         return this.tw.wait(300);
+
+      case "world_event": {
+        // A wave of mist rolls across the view; quakes shake harder.
+        const { width, height } = this.app.screen;
+        const halfW = width / 2 / this.cam.zoom;
+        const halfH = height / 2 / this.cam.zoom;
+        this.shake = /quake|big|shake/.test(e.source ?? "") ? 26 : 8;
+        for (let i = 0; i < 9; i++) {
+          const x = this.cam.x - halfW + ((i + 0.5) / 9) * halfW * 2;
+          const y = this.cam.y + (Math.random() - 0.5) * halfH;
+          this.emit(x, y, "#dbe4f0", 14, 160, 1.6, 0.18, 0);
+        }
+        return this.tw.wait(400);
+      }
 
       case "win":
         if (tk) {

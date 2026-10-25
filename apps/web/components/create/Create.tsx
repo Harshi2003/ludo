@@ -28,6 +28,7 @@ interface Progress {
   art: StepState;
   attempts: number;
   errors: string[];
+  provider?: { provider: string; model: string; fallbackFrom?: string; reason?: string };
   balanceInfo?: { before: BalanceSummary; after: BalanceSummary; changes: string[] };
 }
 const START: Progress = { design: "idle", validate: "idle", balance: "idle", art: "idle", attempts: 0, errors: [] };
@@ -36,6 +37,23 @@ function Editable({ value, onChange, className, label }: { value: string; onChan
   return (
     <input value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} spellCheck={false}
       className={`w-full rounded-md border border-transparent bg-transparent px-1 -mx-1 outline-none transition hover:border-white/15 focus:border-accent/60 focus:bg-black/20 ${className ?? ""}`} />
+  );
+}
+
+/** Which model is designing the world, and why if it fell back. */
+function ProviderBadge({ info }: { info: NonNullable<Progress["provider"]> }) {
+  return (
+    <div className="mb-3 text-sm">
+      <span className="inline-flex flex-wrap items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1.5">
+        <span className="h-2 w-2 rounded-full bg-accent" />
+        <span className="text-muted">Designed with</span>
+        <span className="font-semibold text-ink">{info.provider}</span>
+        <code className="rounded bg-white/5 px-1.5 text-xs text-white/70">{info.model}</code>
+      </span>
+      {info.fallbackFrom && (
+        <p className="mt-1.5 text-xs text-amber-200/80">{info.fallbackFrom} couldn&apos;t finish ({info.reason}). Switched to the fallback.</p>
+      )}
+    </div>
   );
 }
 
@@ -91,6 +109,7 @@ export default function Create() {
   const handle = (e: ForgeEvent) => {
     setProgress((p) => {
       switch (e.stage) {
+        case "provider": return { ...p, design: "active", validate: "idle", errors: [], attempts: 0, provider: e };
         case "design": return { ...p, design: "active", validate: e.attempt > 1 ? "active" : p.validate, attempts: e.attempt };
         case "invalid": return { ...p, design: "done", validate: "active", errors: e.errors };
         case "valid": return { ...p, design: "done", validate: "done", balance: "active", errors: [] };
@@ -100,7 +119,15 @@ export default function Create() {
         default: return p;
       }
     });
-    if (e.stage === "done") setPack(e.pack);
+    if (e.stage === "done") {
+      setPack(e.pack);
+      // Into the kingdom library right away; "Play" later re-saves any edits.
+      try {
+        saveWorld(e.pack, lastTheme.current);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    }
     if (e.stage === "error") setError(e.message);
   };
 
@@ -167,8 +194,8 @@ export default function Create() {
           {missingKey && (
             <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="glass mt-4 rounded-2xl p-5 text-sm">
               <div className="font-display text-lg font-bold text-gold">The forge needs an AI key</div>
-              <p className="mt-1 text-white/75">Add your Anthropic API key to <code className="rounded bg-black/40 px-1.5">apps/web/.env.local</code>:</p>
-              <pre className="mt-2 overflow-x-auto rounded-xl bg-black/40 p-3 text-xs text-white/85">ANTHROPIC_API_KEY=sk-ant-…{"\n"}FAL_KEY=…        # optional, paints art</pre>
+              <p className="mt-1 text-white/75">Add your Anthropic API key (and optionally Bitdeer AI Model Studio as a backup) to <code className="rounded bg-black/40 px-1.5">apps/web/.env.local</code>:</p>
+              <pre className="mt-2 overflow-x-auto rounded-xl bg-black/40 p-3 text-xs text-white/85">ANTHROPIC_API_KEY=sk-ant-…{"\n"}BITDEER_API_KEY=…            # optional backup{"\n"}FAL_KEY=…                    # optional, paints art</pre>
               <p className="mt-2 text-white/60">Then restart the dev server. Meanwhile you can try the full flow with a built-in demo world.</p>
               <button onClick={() => void forge(true)} className="mt-3 rounded-xl bg-primary px-4 py-2 font-semibold text-white">Try the demo world</button>
             </motion.section>
@@ -187,6 +214,8 @@ export default function Create() {
                 <div className="absolute inset-10 rounded-full" style={{ background: "radial-gradient(circle, rgba(252,211,77,.35), transparent 70%)" }} />
                 <motion.div animate={{ scale: [1, 1.12, 1] }} transition={{ duration: 2, repeat: Infinity }} className="text-5xl text-gold">✦</motion.div>
               </div>
+              <div>
+              {progress.provider && <ProviderBadge info={progress.provider} />}
               <ol className="space-y-3">
                 {steps.map((s) => {
                   const st = progress[s.key] as StepState;
@@ -204,11 +233,13 @@ export default function Create() {
                   );
                 })}
               </ol>
+              </div>
             </motion.section>
           )}
         </AnimatePresence>
 
         {/* Reveal */}
+        {pack && progress.provider && <div className="mt-8"><ProviderBadge info={progress.provider} /></div>}
         {pack && <Reveal pack={pack} update={update} balance={progress.balanceInfo} onSave={save} onAgain={() => { setPack(null); setProgress(START); }} />}
       </main>
     </div>
@@ -314,10 +345,11 @@ function Reveal({ pack, update, balance, onSave, onAgain }: {
         </div>
       )}
 
-      <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+      <p className="mt-8 text-center text-sm text-emerald-300/90">✓ Saved to your kingdoms. Find it on the home screen next to Magic Ludo.</p>
+      <div className="mt-3 flex flex-col gap-3 sm:flex-row">
         <button onClick={() => onSave("/")} className="font-display flex-1 rounded-2xl py-4 text-lg font-black tracking-[.12em] text-[#1a0b2e]"
-          style={{ background: "linear-gradient(180deg,#fff1b8,#fcd34d 40%,#f59e0b)" }}>SAVE &amp; PLAY</button>
-        <button onClick={() => onSave("/lab")} className="glass flex-1 rounded-2xl py-4 font-semibold">Save &amp; open Balance Lab</button>
+          style={{ background: "linear-gradient(180deg,#fff1b8,#fcd34d 40%,#f59e0b)" }}>PLAY THIS WORLD</button>
+        <button onClick={() => onSave("/lab")} className="glass flex-1 rounded-2xl py-4 font-semibold">Open in Balance Lab</button>
         <button onClick={onAgain} className="rounded-2xl px-6 py-4 text-muted hover:text-ink">Forge again</button>
       </div>
     </motion.section>

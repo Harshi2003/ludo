@@ -1,6 +1,6 @@
 "use client";
 import {
-  botAction, character, createGame, step, tileDef, type Action, type GameEvent, type GameState, type ThemePack,
+  botAction, character, createGame, reigning, step, tideLeft, tileDef, type Action, type GameEvent, type GameState, type ThemePack,
 } from "@ludo/engine";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -8,8 +8,10 @@ import { BoardRenderer } from "@/lib/board/BoardRenderer";
 import { isMuted, setMuted, sfx } from "@/lib/sfx";
 import { splitTitle } from "@/lib/worlds";
 import { Dice, type DiceHandle } from "../Dice";
-import { AbilityBar, Cinematic, LogDrawer, PlayerCards, Toasts, Victory, type Toast } from "./hud";
+import { AbilityBar, Cinematic, LogDrawer, ModelStudioPanel, NarratorTicker, PlayerCards, Toasts, Victory, WorldEventBanner, type Toast } from "./hud";
 import type { GameFeed } from "@/lib/net/useRoom";
+import { useNarrator } from "@/lib/ai/narrator";
+import { useWorldTheme } from "@/lib/theme";
 import { Minimap } from "./Minimap";
 
 /** Online play: the server owns the state; this client controls only its own seats. */
@@ -31,7 +33,7 @@ export interface GameConfig {
   players: { character: string; bot: boolean }[];
 }
 
-const TOAST_KINDS = new Set<GameEvent["kind"]>(["capture", "blocked_capture", "tile", "trap", "ability", "ultimate", "passive", "skip", "storm", "no_moves", "effect", "win"]);
+const TOAST_KINDS = new Set<GameEvent["kind"]>(["capture", "blocked_capture", "tile", "trap", "ability", "ultimate", "passive", "skip", "storm", "no_moves", "effect", "win", "event_warning", "tide"]);
 
 function useViewport() {
   const [vp, setVp] = useState({ w: 1280, h: 800 });
@@ -62,11 +64,19 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const seen = useRef(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [cine, setCine] = useState<GameEvent | null>(null);
+  const [worldEv, setWorldEv] = useState<GameEvent | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  useWorldTheme(pack);
+  const narrator = useNarrator(pack);
+  const observe = narrator.observe;
   const [muted, setMute] = useState(isMuted());
   const [fast, setFast] = useState(false);
   const [showWin, setShowWin] = useState(false);
   const dice = useRef<DiceHandle>(null);
+  const dice2 = useRef<DiceHandle>(null);
+  const pick2 = pack.rules.dice === "pick2";
   const host = useRef<HTMLDivElement>(null);
   const toastId = useRef(0);
   const { w, h } = useViewport();
@@ -109,9 +119,12 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const play = useCallback(async (events: GameEvent[], r: BoardRenderer) => {
     const s = stateRef.current;
     for (const e of events) {
+      observe(e, s);
       if (e.kind === "roll" && e.value) {
         sfx.roll();
-        await dice.current?.roll(e.value);
+        // Animate the faces actually thrown; modifiers can push the counted value past 6.
+        const faces = e.dice ?? [Math.min(6, e.value)];
+        await Promise.all([dice.current?.roll(faces[0]), faces[1] ? dice2.current?.roll(faces[1]) : undefined]);
       }
       if (e.kind === "ultimate" || e.kind === "ability") {
         e.kind === "ultimate" ? sfx.ultimate() : sfx.ability();
@@ -121,6 +134,15 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
           setCine(null);
         }
       }
+      if (e.kind === "world_event") {
+        sfx.worldEvent(e.source);
+        setWorldEv(e);
+        void r.playEvent(e, s);
+        await new Promise((res) => setTimeout(res, fast ? 1100 : 2000));
+        setWorldEv(null);
+        continue;
+      }
+      if (e.kind === "event_warning" || e.kind === "tide") sfx.warning();
       if (e.kind === "turn") sfx.turn();
       if (e.kind === "capture") sfx.capture();
       if (e.kind === "blocked_capture") sfx.shield();
@@ -131,7 +153,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       await r.playEvent(e, s);
     }
     await r.sync(s);
-  }, [pack, fast, pushToast]);
+  }, [pack, fast, pushToast, observe]);
 
   const act = useCallback(async (a: Action) => {
     if (busyRef.current || !renderer) return;
@@ -240,6 +262,14 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const waitingOn = curLabel?.name && !curLabel.covering ? `— ${curLabel.name} is choosing…` : "is plotting…";
   const canRoll = humanTurn && view.phase === "roll" && !busy;
   const stormAt = pack.rules.stormRound[view.players.length as 2 | 3 | 4];
+  const nextEv = view.nextEvent ? pack.events?.[view.nextEvent.index] : undefined;
+  const nextIn = view.nextEvent ? view.nextEvent.round - view.round : 0;
+  const oneWay = pack.rules.movement === "forward";
+  const tide = reigning(pack, view);
+  const tideChamps = tide ? pack.characters.filter((c) => c.element === tide) : [];
+  // Below this width the secondary controls fold into a "more" menu so the bar never overflows.
+  const roomy = w >= 1180;
+  const rolled = view.phase === "move" && view.dice ? view.dice.join(" or ") : view.roll;
 
   return (
     <div className="fixed inset-0 select-none overflow-hidden bg-bg">
@@ -266,15 +296,55 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
             <div className="text-[9px] uppercase tracking-[.2em] text-muted">Round</div>
             <div className="font-display text-base font-bold leading-tight">{view.round}</div>
           </div>
-          <div className={`glass hidden rounded-xl px-3 py-1.5 text-center sm:block ${view.storm ? "border-amber-300/60" : ""}`}
-            title={`${pack.rules.stormName}: backward moves end at round ${stormAt}`}>
-            <div className="text-[9px] uppercase tracking-[.2em] text-muted">Storm</div>
-            <div className={`text-sm font-bold leading-tight ${view.storm ? "text-amber-300" : ""}`}>{view.storm ? "⛈ Now" : `in ${stormAt - view.round}`}</div>
-          </div>
+          {oneWay ? (
+            <div className="glass hidden rounded-xl px-3 py-1.5 text-center lg:block" title="One-way streets: every move goes forward">
+              <div className="text-[9px] uppercase tracking-[.2em] text-muted">Streets</div>
+              <div className="text-sm font-bold leading-tight">→ One-way</div>
+            </div>
+          ) : (
+            <div className={`glass hidden rounded-xl px-3 py-1.5 text-center sm:block ${view.storm ? "border-amber-300/60" : ""}`}
+              title={`${pack.rules.stormName}: backward moves end at round ${stormAt}`}>
+              <div className="max-w-[110px] truncate text-[9px] uppercase tracking-[.2em] text-muted">{shortName(pack.rules.stormName)}</div>
+              <div className={`text-sm font-bold leading-tight ${view.storm ? "text-amber-300" : ""}`}>{view.storm ? "⛈ Now" : `in ${stormAt - view.round}`}</div>
+            </div>
+          )}
+          {tide && pack.rules.tides && (
+            <div className="glass hidden rounded-xl px-3 py-1.5 text-center sm:block" style={{ borderColor: `${tideChamps[0]?.color ?? "#fff"}88` }}
+              title={`${pack.rules.tides.name}: ${tideChamps.map((c) => c.name).join(" & ") || "nobody"} moves +${pack.rules.tides.bonus} going forward`}>
+              <div className="text-[9px] uppercase tracking-[.2em] text-muted">{tideLeft(pack, view) === 1 ? "Tide · last round" : `Tide · ${tideLeft(pack, view)} rounds`}</div>
+              <div className="text-sm font-bold capitalize leading-tight" style={{ color: tideChamps[0]?.color }}>{tide} +{pack.rules.tides.bonus}</div>
+            </div>
+          )}
+          {nextEv && (
+            <div className={`glass hidden max-w-[150px] rounded-xl px-3 py-1.5 text-center sm:block ${nextIn <= 1 ? "border-accent/70" : ""}`}
+              title={`${nextEv.name}: ${nextEv.description}`}>
+              <div className="text-[9px] uppercase tracking-[.2em] text-muted">{nextIn <= 1 ? "Next round" : `Event in ${nextIn}`}</div>
+              <div className={`truncate text-sm font-bold leading-tight ${nextIn <= 1 ? "text-accent" : ""}`}>{nextEv.name}</div>
+            </div>
+          )}
           <IconBtn label="Overview" onClick={() => renderer?.overview()}>⤢</IconBtn>
           <IconBtn label="Follow" onClick={() => renderer?.focusSeat(stateRef.current.turn)}>◎</IconBtn>
-          {!online && <IconBtn label={fast ? "Normal speed" : "Fast bots"} active={fast} onClick={() => setFast((f) => !f)}>»</IconBtn>}
-          <IconBtn label={muted ? "Unmute" : "Mute"} onClick={() => { setMuted(!muted); setMute(!muted); }}>{muted ? "🔇" : "🔊"}</IconBtn>
+          {roomy ? (
+            <>
+              {!online && <IconBtn label={fast ? "Normal speed" : "Fast bots"} active={fast} onClick={() => setFast((f) => !f)}>»</IconBtn>}
+              <IconBtn label={muted ? "Unmute" : "Mute"} onClick={() => { setMuted(!muted); setMute(!muted); }}>{muted ? "🔇" : "🔊"}</IconBtn>
+              <IconBtn label="AI commentary" active={aiOpen || (narrator.available && narrator.on)} onClick={() => setAiOpen((o) => !o)}>🎙</IconBtn>
+            </>
+          ) : (
+            <div className="relative">
+              <IconBtn label="More" active={moreOpen} onClick={() => setMoreOpen((o) => !o)}>⋯</IconBtn>
+              <AnimatePresence>
+                {moreOpen && (
+                  <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+                    className="glass absolute right-0 top-12 z-40 w-52 rounded-2xl p-1.5 text-sm">
+                    {!online && <MenuItem icon="»" label={fast ? "Normal speed" : "Fast bots"} on={fast} onClick={() => setFast((f) => !f)} />}
+                    <MenuItem icon={muted ? "🔇" : "🔊"} label={muted ? "Sound off" : "Sound on"} on={!muted} onClick={() => { setMuted(!muted); setMute(!muted); }} />
+                    <MenuItem icon="🎙" label="AI commentary" on={aiOpen} onClick={() => { setAiOpen((o) => !o); setMoreOpen(false); }} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
           <IconBtn label="Chronicle" active={logOpen} onClick={() => setLogOpen((o) => !o)}>☰</IconBtn>
         </div>
       </div>
@@ -288,6 +358,12 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       <div className="pointer-events-none absolute inset-x-0 top-[70px] z-20 sm:top-[84px]">
         <Toasts pack={pack} state={view} toasts={toasts} />
       </div>
+      <div className="pointer-events-none absolute inset-x-0 z-20 px-28 sm:px-40" style={{ bottom: desktop ? 28 : 18 }}>
+        <NarratorTicker pack={pack} state={view} line={narrator.line} />
+      </div>
+      <AnimatePresence>
+        {aiOpen && <ModelStudioPanel stats={narrator.stats} available={narrator.available} on={narrator.on} onToggle={narrator.setOn} onClose={() => setAiOpen(false)} />}
+      </AnimatePresence>
 
       {/* Action dock */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 p-2 sm:p-4"
@@ -298,7 +374,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
               className="glass mb-2 w-fit rounded-xl px-3 py-1.5 text-xs sm:text-sm">
               <span className="font-display font-bold" style={{ color: cc.color }}>{cc.name}</span>{" "}
               <span className="text-white/80">
-                {view.phase === "over" ? "has won!" : !humanTurn ? waitingOn : view.phase === "roll" ? "— cast an ability or roll" : `— choose a glowing tile (${view.roll})`}
+                {view.phase === "over" ? "has won!" : !humanTurn ? waitingOn : view.phase === "roll" ? (pick2 ? "— cast an ability or roll both dice" : "— cast an ability or roll") : pick2 ? `— pick a die: ${rolled}` : `— choose a glowing tile (${view.roll})`}
               </span>
             </motion.div>
           </AnimatePresence>
@@ -317,14 +393,18 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
           }}
           aria-label="Roll the dice"
         >
-          <Dice ref={dice} size={desktop ? 58 : 46} />
+          <div className="flex items-center gap-2" style={{ marginTop: pick2 ? -8 : 0 }}>
+            <Dice ref={dice} size={pick2 ? (desktop ? 44 : 34) : desktop ? 58 : 46} />
+            {pick2 && <Dice ref={dice2} size={desktop ? 44 : 34} />}
+          </div>
           <span className="absolute bottom-2 text-[10px] font-bold uppercase tracking-[.25em]" style={{ color: canRoll ? cc.color : "var(--muted)" }}>
-            {canRoll ? "Roll" : view.roll ? view.roll : "·"}
+            {canRoll ? "Roll" : rolled ? (pick2 && view.phase === "move" ? rolled.toString().replace(" or ", " · ") : rolled) : "·"}
           </span>
         </motion.button>
       </div>
 
       <Cinematic pack={pack} state={view} e={cine} />
+      <WorldEventBanner pack={pack} e={worldEv} />
       <LogDrawer pack={pack} state={view} open={logOpen} onClose={() => setLogOpen(false)} />
       {showWin && <Victory pack={pack} state={view} onHome={onExit} onRematch={online ? online.onRematch : onRematch} label={online?.label} />}
       {online && online.conn !== "open" && (
@@ -340,6 +420,21 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       )}
       {portrait && <RotateHint />}
     </div>
+  );
+}
+
+/** "The Great Sugar Crash" → "Sugar Crash": fits the chip. */
+function shortName(name: string) {
+  return name.replace(/^the\s+(great\s+)?/i, "").split(/\s+/).slice(0, 2).join(" ");
+}
+
+function MenuItem({ icon, label, on, onClick }: { icon: string; label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/10 ${on ? "text-accent" : ""}`}>
+      <span className="w-5 text-center">{icon}</span>
+      <span className="flex-1">{label}</span>
+      {on && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+    </button>
   );
 }
 

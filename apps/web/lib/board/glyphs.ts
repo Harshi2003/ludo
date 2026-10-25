@@ -160,6 +160,42 @@ export function drawGlyph(g: Graphics, glyph: Glyph, s: number, color: number, c
         .fill(color);
       break;
 
+    case "cablecar":
+      g.moveTo(-s, -s * 0.85).lineTo(s, -s * 0.85).stroke({ ...line, width: s * 0.1 });
+      g.moveTo(0, -s * 0.85).lineTo(0, -s * 0.55).stroke({ ...line, width: s * 0.12 });
+      g.roundRect(-s * 0.85, -s * 0.55, s * 1.7, s * 1.15, s * 0.18).fill(color);
+      for (const x of [-0.55, -0.1, 0.35]) g.rect(x * s, -s * 0.38, s * 0.3, s * 0.36).fill(cut);
+      g.circle(-s * 0.48, s * 0.78, s * 0.17).fill(color);
+      g.circle(s * 0.48, s * 0.78, s * 0.17).fill(color);
+      break;
+
+    case "bridge":
+      for (const x of [-0.5, 0.5]) g.rect((x - 0.08) * s, -s, s * 0.16, s * 1.75).fill(color);
+      g.moveTo(-s, -s * 0.15).quadraticCurveTo(-s * 0.5, -s * 1.1, -s * 0.5, -s * 0.95)
+        .moveTo(-s * 0.5, -s * 0.95).quadraticCurveTo(0, s * 0.1, s * 0.5, -s * 0.95)
+        .moveTo(s * 0.5, -s * 0.95).quadraticCurveTo(s * 0.5, -s * 1.1, s, -s * 0.15)
+        .stroke({ ...line, width: s * 0.1 });
+      g.rect(-s, s * 0.25, s * 2, s * 0.16).fill(color);
+      break;
+
+    case "cloud":
+      g.circle(-s * 0.42, s * 0.12, s * 0.4).fill(color);
+      g.circle(s * 0.05, -s * 0.18, s * 0.52).fill(color);
+      g.circle(s * 0.5, s * 0.15, s * 0.36).fill(color);
+      g.roundRect(-s * 0.82, s * 0.1, s * 1.68, s * 0.42, s * 0.2).fill(color);
+      g.moveTo(-s * 0.7, s * 0.8).lineTo(s * 0.5, s * 0.8).stroke({ ...line, width: s * 0.12 });
+      break;
+
+    case "chip":
+      g.roundRect(-s * 0.6, -s * 0.6, s * 1.2, s * 1.2, s * 0.15).fill(color);
+      g.roundRect(-s * 0.3, -s * 0.3, s * 0.6, s * 0.6, s * 0.08).fill(cut);
+      for (const k of [-0.32, 0, 0.32]) {
+        g.moveTo(k * s, -s * 0.6).lineTo(k * s, -s * 0.95).moveTo(k * s, s * 0.6).lineTo(k * s, s * 0.95)
+          .moveTo(-s * 0.6, k * s).lineTo(-s * 0.95, k * s).moveTo(s * 0.6, k * s).lineTo(s * 0.95, k * s)
+          .stroke({ ...line, width: s * 0.11 });
+      }
+      break;
+
     case "none":
       break;
   }

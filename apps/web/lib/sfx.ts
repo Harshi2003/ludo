@@ -90,6 +90,25 @@ export const sfx = {
   win() {
     [523, 659, 784, 1046, 784, 1046, 1318].forEach((f, i) => tone(f, 0.45, "triangle", 0.09, undefined, i * 0.13));
   },
+  /** World events: foghorn, quake rumble, or a cable-car bell, picked by the event's id. */
+  worldEvent(id = "") {
+    if (/fog|karl|mist/.test(id)) {
+      tone(98, 1.6, "sawtooth", 0.09, 92);
+      tone(73, 1.6, "sawtooth", 0.07, 70, 0.05);
+    } else if (/quake|big|shake/.test(id)) {
+      noise(1.4, 0.4, 120);
+      tone(42, 1.4, "sine", 0.3, 28);
+    } else {
+      [0, 0.22].forEach((d) => {
+        tone(1568, 0.5, "triangle", 0.08, undefined, d);
+        tone(2093, 0.4, "sine", 0.04, undefined, d);
+      });
+    }
+  },
+  warning() {
+    tone(520, 0.18, "square", 0.03);
+    tone(390, 0.24, "square", 0.03, undefined, 0.2);
+  },
   click() {
     tone(1200, 0.04, "square", 0.025);
   },

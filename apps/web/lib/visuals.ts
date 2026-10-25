@@ -47,3 +47,8 @@ export function zoneColor(pack: ThemePack, zone: number): string {
   const z = pack.zones[zone];
   return (z && pack.art.zoneColors[z.id]) ?? pack.art.palette.primary;
 }
+
+export type Scene = "fantasy" | "city" | "candy";
+
+/** The overall look a world asks for; packs from before scenes existed are fantasy. */
+export const sceneOf = (pack: ThemePack): Scene => pack.art.scene ?? "fantasy";

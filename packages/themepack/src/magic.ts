@@ -90,6 +90,7 @@ export const magicPack: ThemePack = {
     stormName: 'The Storm Calls',
     extraRollOnSix: true,
     ultimateCharge: { turn: 1, capture: 2, captured: 3 },
+    tides: { every: 3, elements: ['earth', 'fire', 'air', 'water'], bonus: 1, name: 'Elemental Tide' },
   },
   art: {
     style: 'luminous high-fantasy, floating islands, crystal and starlight, painterly',

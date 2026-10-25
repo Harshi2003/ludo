@@ -2,7 +2,7 @@
 import { magicPack } from "@ludo/themepack";
 import { useEffect, useMemo, useState } from "react";
 import { applyTuning, loadTuning } from "@/lib/tuning";
-import { getWorld, listWorlds, selectedWorldId, selectWorld, type WorldEntry } from "@/lib/worlds";
+import { getWorld, listWorlds, selectedWorldId, selectWorld, syncWorlds, type WorldEntry } from "@/lib/worlds";
 import Game, { type GameConfig } from "./game/Game";
 import { Home } from "./Home";
 
@@ -12,6 +12,10 @@ export default function App() {
   const [worlds, setWorlds] = useState<WorldEntry[]>(() => listWorlds());
   const [worldId, setWorldId] = useState(() => selectedWorldId());
   const base = worlds.find((w) => w.pack.id === worldId)?.pack ?? magicPack;
+
+  useEffect(() => {
+    void syncWorlds().then((changed) => changed && setWorlds(listWorlds()));
+  }, []);
 
   useEffect(() => {
     if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {

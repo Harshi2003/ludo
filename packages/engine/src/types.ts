@@ -9,7 +9,8 @@ export type Who =
   | 'ahead' // opponents closer to the finish than you
   | 'behind'
   | 'random'
-  | 'captured'; // the opponent you just captured (passive triggers only)
+  | 'captured' // the opponent you just captured (passive triggers only)
+  | 'everyone'; // every player, yourself included
 
 export interface TargetSpec {
   who: Who;
@@ -33,6 +34,10 @@ export type Effect =
   | { op: 'block_tile'; target: TargetSpec; turns: number } // blocks the tiles in front of target
   | { op: 'modify_dice'; target: TargetSpec; mode: DiceMode; turns: number }
   | { op: 'charge_ultimate'; target: TargetSpec; n: number }
+  | { op: 'steal_charge'; target: TargetSpec; n: number } // drain their ultimate into yours
+  | { op: 'rewind'; target: TargetSpec } // back to where their last turn started
+  | { op: 'hitch'; target: TargetSpec } // jump to the tile just behind them (never captures)
+  | { op: 'mimic'; target: TargetSpec; slot: 'active' | 'ultimate' } // run their ability as your own
   | { op: 'if_element'; element: string; then: Effect[]; else: Effect[] }
   | { op: 'random'; options: Effect[][] };
 
@@ -72,7 +77,8 @@ export interface TileTypeDef {
 
 export type Glyph =
   | 'moon' | 'portal' | 'bolt' | 'shield' | 'eye' | 'snowflake' | 'chevrons' | 'question'
-  | 'swap' | 'star' | 'flame' | 'drop' | 'leaf' | 'wind' | 'skull' | 'gem' | 'crown' | 'anchor' | 'heart' | 'none';
+  | 'swap' | 'star' | 'flame' | 'drop' | 'leaf' | 'wind' | 'skull' | 'gem' | 'crown' | 'anchor' | 'heart'
+  | 'cablecar' | 'bridge' | 'cloud' | 'chip' | 'none';
 
 export interface AbilityDef {
   id: string;
@@ -94,6 +100,7 @@ export interface PassiveDef {
   pushImmune?: boolean; // ignores forced movement from opponents
   startShield?: number; // shield charges at game start (never expire)
   diceFloor?: number; // rolls below this count as this
+  slopeImmune?: boolean; // uphill zones don't slow you
   triggers?: { on: 'capture' | 'captured' | 'turn_start'; effects: Effect[] }[];
 }
 
@@ -123,7 +130,9 @@ export interface ZoneDef {
   danger: 'low' | 'medium' | 'high';
   description: string;
   /** Scenery style for the zone's island. */
-  decor?: 'forest' | 'falls' | 'peaks' | 'sky' | 'crystal' | 'shrine';
+  decor?: 'forest' | 'falls' | 'peaks' | 'sky' | 'crystal' | 'shrine' | 'city' | 'bridge' | 'hills' | 'chinatown' | 'lollipop' | 'gumdrop' | 'cupcake';
+  /** Forward moves starting here are 1 shorter (up) or longer (down). */
+  slope?: 'up' | 'down';
 }
 
 export interface ThemeRules {
@@ -132,6 +141,28 @@ export interface ThemeRules {
   stormName: string;
   extraRollOnSix: boolean;
   ultimateCharge: { turn: number; capture: number; captured: number };
+  /** A world event fires every N rounds (needs pack.events). */
+  eventEvery?: number;
+  /** 'pick2': roll two dice and move by either one; doubles grant an extra roll. Default one die. */
+  dice?: 'one' | 'pick2';
+  /** 'forward': one-way board, no backward moves at all. Default 'both' until the storm. */
+  movement?: 'both' | 'forward';
+  /**
+   * What a capture does to the victim. 'checkpoint' (default) sends them to their last checkpoint;
+   * 'tow' knocks them back `back` tiles; 'stun' leaves them in place but costs them their next turn.
+   * `steal` moves that much ultimate charge from victim to attacker.
+   */
+  capture?: { mode: 'checkpoint' | 'tow' | 'stun'; back?: number; steal?: number };
+  /** Rotating reign: every `every` rounds the next element in `elements` reigns; its champions get +`bonus` on forward moves. */
+  tides?: { every: number; elements: string[]; bonus: number; name: string };
+}
+
+/** Table-wide happening. Effects run from the world's point of view: no "self", and "behind"/"ahead" are relative to the pack's median. */
+export interface WorldEventDef {
+  id: string;
+  name: string;
+  description: string;
+  effects: Effect[];
 }
 
 export interface ThemePack {
@@ -141,9 +172,12 @@ export interface ThemePack {
   tiles: TileTypeDef[];
   characters: CharacterDef[];
   rules: ThemeRules;
+  events?: WorldEventDef[];
   art: {
     style: string;
     palette: { bg: string; surface: string; primary: string; accent: string; text: string };
+    /** Overall look of the board and menus. Defaults to 'fantasy'. */
+    scene?: 'fantasy' | 'city' | 'candy';
     zoneColors: Record<string, string>;
     /** Optional AI-painted art (URLs or data URIs). */
     backgroundUrl?: string;
@@ -199,6 +233,8 @@ export interface PlayerState {
   dice: { mode: DiceMode; turns: number } | null;
   captures: number;
   timesCaptured: number;
+  /** Tile this player's current/last turn started on (for rewind). */
+  turnStart: number;
 }
 
 export interface Trap {
@@ -217,6 +253,8 @@ export interface Block {
 
 export interface MoveOption {
   dir: 'fwd' | 'back';
+  /** Which die this move uses (pick2 dice). */
+  die?: number;
   path: number[]; // excludes the starting tile
   to: number;
   captures: number[]; // seats
@@ -238,6 +276,9 @@ export type GameEvent = {
     | 'skip'
     | 'no_moves'
     | 'storm'
+    | 'world_event'
+    | 'event_warning'
+    | 'tide'
     | 'checkpoint'
     | 'win';
   seat: number;
@@ -248,6 +289,8 @@ export type GameEvent = {
   tile?: number;
   path?: number[];
   value?: number;
+  /** Raw die faces of a roll (two for pick2 worlds). */
+  dice?: number[];
   /** Where a captured/displaced token ends up. */
   to?: number;
 };
@@ -263,6 +306,9 @@ export interface GameState {
   phase: Phase;
   roll: number | null;
   rawRoll: number | null;
+  /** Both dice for pick2 worlds, after modifiers (raw values in `rawDice`). */
+  dice?: number[] | null;
+  rawDice?: number[] | null;
   moves: MoveOption[];
   usedAbility: boolean;
   extraRolls: number;
@@ -274,6 +320,8 @@ export interface GameState {
   winner: number | null;
   storm: boolean;
   bonusRoll: boolean;
+  /** The next scheduled world event (index into pack.events). */
+  nextEvent: { round: number; index: number } | null;
 }
 
 export type Action =
