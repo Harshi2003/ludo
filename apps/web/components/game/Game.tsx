@@ -12,12 +12,15 @@ import { splitTitle } from "@/lib/worlds";
 import { Dice, type DiceHandle } from "../Dice";
 import { AbilityBar, Cinematic, LogDrawer, ModelStudioPanel, NarratorTicker, PlayerCards, Toasts, Victory, WorldEventBanner, type Toast } from "./hud";
 import type { GameFeed } from "@/lib/net/useRoom";
-import { useNarrator } from "@/lib/ai/narrator";
+import { plain, useNarrator } from "@/lib/ai/narrator";
 import { askRival } from "@/lib/ai/rival";
 import { callStudio, readPref, resetStudioStats, writePref } from "@/lib/ai/studio";
 import { sagaRequest, type Saga } from "@/lib/ai/saga";
 import { useWorldTheme } from "@/lib/theme";
 import { Minimap } from "./Minimap";
+import { missHint } from "@/lib/missHint";
+import { planMoves } from "@/lib/overseer";
+import { Overseer } from "./Overseer";
 import { squadName } from "@/lib/squad";
 
 /** Online play: the server owns the state; this client controls only its own seats. */
@@ -63,6 +66,20 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const [logOpen, setLogOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  // The Overseer explains powers and ranks moves for whoever is playing; on unless switched off.
+  const [guide, setGuideState] = useState(true);
+  useEffect(() => { try { setGuideState(localStorage.getItem("ludo:overseer") !== "0"); } catch {} }, []);
+  const setGuide = useCallback((v: boolean) => { setGuideState(v); try { localStorage.setItem("ludo:overseer", v ? "1" : "0"); } catch {} }, []);
+  // Phones float the commentary just above the dock, however tall the dock grows.
+  const dockRef = useRef<HTMLDivElement>(null);
+  const [dockH, setDockH] = useState(0);
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setDockH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useWorldTheme(pack);
   const narrator = useNarrator(pack);
   const { observe, say, available: aiReady } = narrator;
@@ -108,8 +125,8 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
 
   useEffect(() => {
     renderer?.setPortrait(portrait);
-    renderer?.setInsets(desktop ? { left: 300, right: 20, top: 70, bottom: 120 } : { left: 0, right: 0, top: portrait ? 126 : 66, bottom: portrait ? 170 : 96 });
-  }, [renderer, desktop, portrait, w, h]);
+    renderer?.setInsets(desktop ? { left: 300, right: 20, top: 70, bottom: 120 } : { left: 0, right: 0, top: portrait ? 126 : 66, bottom: portrait ? Math.max(170, dockH + 16) : 96 });
+  }, [renderer, desktop, portrait, w, h, dockH]);
 
   useEffect(() => renderer?.setSpeed(fast ? 2 : 1), [renderer, fast]);
 
@@ -270,18 +287,27 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
     }
     if (saga || !aiReady) return;
     setSaga("loading");
-    void callStudio<Saga>("saga", "/api/saga", sagaRequest(pack, stateRef.current), 35_000).then((j) => setSaga(j?.story ? j : null));
+    void callStudio<Saga>("saga", "/api/saga", sagaRequest(pack, stateRef.current), 35_000).then((j) => setSaga(j?.story ? { ...j, title: plain(j.title), story: plain(j.story), mvp: j.mvp && plain(j.mvp) } : null));
   }, [view.phase, saga, aiReady, pack]);
 
   // Highlight legal destinations for humans.
   useEffect(() => {
     if (!renderer) return;
     const human = isMine(view.turn) && view.phase === "move" && !busy;
-    renderer.setMoves(human ? view.moves : null, view.turn);
+    // With the Overseer on, rings carry the same numbers as its list, best first.
+    const ranked = human && guide ? planMoves(pack, view).plans : [];
+    const numbers: number[] = [];
+    ranked.forEach((p, rank) => { numbers[p.index] = rank + 1; });
+    renderer.setMoves(human ? view.moves : null, view.turn, ranked.length ? numbers : undefined);
+    if (ranked.length > 1) renderer.showAdvice(ranked[0].index);
     renderer.onPick = (i) => { sfx.click(); void act({ type: "move", index: i }); };
+    renderer.onMiss = human ? (tile) => {
+      const msg = missHint(pack, stateRef.current, tile);
+      if (msg) pushToast({ kind: "no_moves", seat: view.turn, msg });
+    } : undefined;
     // Test hook for automated playtests.
-    if (process.env.NODE_ENV !== "production") (window as unknown as { __ludo: unknown }).__ludo = { state: () => stateRef.current, pick: renderer.onPick };
-  }, [renderer, view, busy, act, isMine]);
+    if (process.env.NODE_ENV !== "production") (window as unknown as { __ludo: unknown }).__ludo = { state: () => stateRef.current, pick: renderer.onPick, at: (t: number) => renderer.screenOf(t) };
+  }, [renderer, view, busy, act, isMine, pack, pushToast, guide]);
 
   // Keyboard: space/enter rolls.
   useEffect(() => {
@@ -370,6 +396,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
               {!online && <IconBtn label={fast ? "Normal speed" : "Fast bots"} active={fast} onClick={() => setFast((f) => !f)}>»</IconBtn>}
               <IconBtn label={muted ? "Unmute" : "Mute"} onClick={() => { setMuted(!muted); setMute(!muted); }}>{muted ? "🔇" : "🔊"}</IconBtn>
               <IconBtn label="AI commentary" active={aiOpen || (narrator.available && narrator.on)} onClick={() => setAiOpen((o) => !o)}>🎙</IconBtn>
+              <IconBtn label={guide ? "Hide the Overseer" : "Show the Overseer"} active={guide} onClick={() => setGuide(!guide)}>◉</IconBtn>
             </>
           ) : (
             <div className="relative">
@@ -381,6 +408,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
                     {!online && <MenuItem icon="»" label={fast ? "Normal speed" : "Fast bots"} on={fast} onClick={() => setFast((f) => !f)} />}
                     <MenuItem icon={muted ? "🔇" : "🔊"} label={muted ? "Sound off" : "Sound on"} on={!muted} onClick={() => { setMuted(!muted); setMute(!muted); }} />
                     <MenuItem icon="🎙" label="AI commentary" on={aiOpen} onClick={() => { setAiOpen((o) => !o); setMoreOpen(false); }} />
+                    <MenuItem icon="◉" label="Overseer tips" on={guide} onClick={() => setGuide(!guide)} />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -399,7 +427,8 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       <div className={`pointer-events-none absolute inset-x-0 z-20 ${portrait ? "top-[126px]" : "top-[70px] sm:top-[84px]"}`}>
         <Toasts pack={pack} state={view} toasts={toasts} />
       </div>
-      <div className="pointer-events-none absolute inset-x-0 z-20 px-28 sm:px-40" style={{ bottom: desktop ? 28 : 18 }}>
+      {/* Phones: float above the action dock so it never hides the powers or the hint. */}
+      <div className={`pointer-events-none absolute inset-x-0 z-20 ${portrait ? "px-3" : "px-28 sm:px-40"}`} style={{ bottom: desktop ? 28 : portrait ? Math.max(dockH, 96) + 4 : 18 }}>
         <NarratorTicker pack={pack} state={view} line={narrator.line} />
       </div>
       <AnimatePresence>
@@ -412,7 +441,12 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       {/* Action dock */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 p-2 sm:p-4"
         style={{ paddingBottom: "max(env(safe-area-inset-bottom), 8px)" }}>
-        <div className="pointer-events-auto">
+        <div ref={dockRef} className="pointer-events-auto">
+          {humanTurn && guide && !busy && view.phase !== "over" && (
+            <Overseer pack={pack} state={view} color={cc.color} compact={!desktop}
+              onPick={(i) => { sfx.click(); void act({ type: "move", index: i }); }}
+              onHover={(i) => renderer?.showAdvice(i ?? planMoves(pack, view).plans[0]?.index ?? -1)} />
+          )}
           {humanTurn && view.phase === "move" && view.moves.length > 1 && aiReady && !busy && (
             <button onClick={() => void askOracle()} disabled={oracleBusy}
               className="glass mb-2 flex items-center gap-1.5 rounded-xl border-amber-300/50 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-white/10 disabled:opacity-70 sm:text-sm"
@@ -432,7 +466,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
               </span>
             </motion.div>
           </AnimatePresence>
-          {humanTurn && <AbilityBar pack={pack} state={view} busy={busy} controllable onUse={(wch, piece) => void act({ type: "ability", which: wch, piece })} compact={!desktop} />}
+          {humanTurn && !(guide && view.phase === "move") && <AbilityBar pack={pack} state={view} busy={busy} controllable onUse={(wch, piece) => void act({ type: "ability", which: wch, piece })} compact={!desktop} />}
         </div>
         <motion.button
           disabled={!canRoll}

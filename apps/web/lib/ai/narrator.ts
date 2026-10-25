@@ -51,7 +51,7 @@ export function useNarrator(pack: ThemePack) {
   /** Shows a line in the ticker, and holds off the sportscaster so it isn't talked over. */
   const say = useCallback((text: string, seat?: number, kind?: "oracle") => {
     last.current = Date.now();
-    setLine({ id: ++lineId.current, text, seat, kind });
+    setLine({ id: ++lineId.current, text: plain(text), seat, kind });
     if (hide.current) clearTimeout(hide.current);
     hide.current = setTimeout(() => setLine(null), kind === "oracle" ? 9000 : 6000);
   }, []);
@@ -98,4 +98,9 @@ export function useNarrator(pack: ThemePack) {
   }
 
   return { available, on, setOn, line, observe, say };
+}
+
+/** Game copy never uses dashes: "shocker — Ada" → "shocker, Ada", "one-hit" → "one hit". */
+export function plain(text: string): string {
+  return text.replace(/\s*[—–]\s*/g, ", ").replace(/(\p{L})-(?=\p{L})/gu, "$1 ").replace(/,\s*([,.!?])/g, "$1");
 }

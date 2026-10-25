@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { magicPack as pack } from '@ludo/themepack';
 import {
-  BOARD_TARGET, botAction, createGame, enumeratePaths, fairness, generateBoard, legalMoves, progress,
+  BOARD_TARGET, botAction, canUseAbility, createGame, enumeratePaths, fairness, generateBoard, legalMoves, progress,
   runEffects, simulate, step, type GameState, type PlayerCount,
 } from '../src';
 
@@ -451,6 +451,114 @@ describe('effect primitives', () => {
     place(s, 3, along(s, 1));
     run(s, 3, [{ op: 'ward', turns: 2 }]);
     expect(legalMoves(pack, s, 0, 1).filter((m) => m.to === along(s, 1)).every((m) => m.captures.length === 0)).toBe(true);
+  });
+});
+
+describe('edge cases', () => {
+  it('a leap over a checkpoint still records it', () => {
+    const s = game(['terra', 'zephyr']);
+    const before = s.board.tiles[along(s, 0)].prev[0];
+    place(s, 0, along(s, 3), 0);
+    place(s, 0, before, 2);
+    run(s, 0, [{ op: 'join', range: 8 }], 2);
+    expect(at(s, 0, 2).checkpoint).toBe(along(s, 0));
+  });
+
+  it('"back to the checkpoint" never carries a piece forward', () => {
+    const s = game();
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 3, along(s, 2));
+    at(s, 3).checkpoint = along(s, 4); // walked back past it
+    run(s, 0, [{ op: 'send_to_checkpoint', target: { who: 'leader' } }]);
+    expect(at(s, 3).tile).toBe(along(s, 0));
+  });
+
+  it('pushes never shove a piece into another house\'s start lane', () => {
+    const s = game();
+    unshield(s);
+    const b = s.board;
+    const entry = b.tiles.find((t) => t.zone >= 0 && t.prev.some((p) => b.tiles[p].start !== undefined))!;
+    place(s, 0, along(s, 0));
+    place(s, 3, entry.id);
+    run(s, 0, [{ op: 'move', target: { who: 'all' }, n: -2 }]);
+    const lane = b.tiles[at(s, 3).tile].start;
+    expect(lane === undefined || lane === 3).toBe(true);
+  });
+
+  it('a forced move stops short of a rival bond', () => {
+    const s = game();
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 3, along(s, 3));
+    place(s, 1, along(s, 1), 1);
+    place(s, 1, along(s, 1), 2);
+    run(s, 0, [{ op: 'move', target: { who: 'leader' }, n: -2 }]);
+    expect(at(s, 3).tile).toBe(along(s, 2));
+  });
+
+  it('Dragonbreath will not fire at a rival standing on holy ground', () => {
+    const s = game(['inferno', 'zephyr']);
+    unshield(s);
+    s.turn = 0;
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 2));
+    expect(canUseAbility(pack, s, 'active', 0)).toBe(true);
+    s.wards.push({ tile: along(s, 2), owner: 1, turns: 3 });
+    expect(canUseAbility(pack, s, 'active', 0)).toBe(false);
+  });
+
+  it('stone pieces are never picked as targets', () => {
+    const s = game(['terra', 'zephyr', 'aqua']);
+    unshield(s);
+    place(s, 0, along(s, 0));
+    place(s, 1, along(s, 1));
+    place(s, 2, along(s, 3));
+    at(s, 1).stone = 3;
+    run(s, 0, [{ op: 'petrify', target: { who: 'nearest' }, turns: 2 }]);
+    expect(at(s, 2).stone).toBe(3);
+  });
+
+  it('a fire trap kill counts as the trap owner\'s capture', () => {
+    const s = game(['inferno', 'zephyr']);
+    unshield(s);
+    place(s, 0, along(s, 3), 1);
+    run(s, 0, [{ op: 'scorch', n: 2, turns: 3, effects: [{ op: 'kill', target: { who: 'self' } }] }], 1);
+    const fire = s.traps[0].tile;
+    place(s, 1, s.board.tiles[fire].prev[0]);
+    s.turn = 1;
+    s.phase = 'move';
+    s.moves = legalMoves(pack, s, 1, 1).filter((m) => m.piece === 0 && m.to === fire);
+    step(pack, s, { type: 'move', index: 0 });
+    expect(s.players[0].captures).toBe(1);
+    expect(at(s, 1).tile).toBe(s.board.starts[1]);
+  });
+
+  it('Healing Waters saves a Tide from a vent too', () => {
+    const s = game(['aqua', 'terra']);
+    unshield(s);
+    place(s, 0, along(s, 2));
+    at(s, 0).checkpoint = along(s, 0);
+    run(s, 0, [{ op: 'kill', target: { who: 'self' } }]);
+    expect(at(s, 0).tile).toBe(along(s, 0));
+    expect(at(s, 0).saved).toBe(true);
+  });
+
+  it('a loaded six and a reversed roll each touch only one roll', () => {
+    const s = game(['zephyr', 'terra']);
+    place(s, 0, along(s, 2));
+    run(s, 0, [{ op: 'modify_dice', target: { who: 'self' }, mode: 'reverse', turns: 1 }]);
+    step(pack, s, { type: 'roll' });
+    expect(s.players[0].dice?.spent).toBe(true);
+    expect(legalMoves(pack, s, 0, 2).some((m) => m.dir === 'fwd')).toBe(true);
+  });
+
+  it('a piece already on the throne cannot cast', () => {
+    const s = game(['zephyr', 'terra']);
+    s.turn = 0;
+    place(s, 0, s.board.finish, 2);
+    expect(canUseAbility(pack, s, 'active', 2)).toBe(false);
+    expect(canUseAbility(pack, s, 'active', 0)).toBe(true);
   });
 });
 

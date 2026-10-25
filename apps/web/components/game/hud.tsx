@@ -261,7 +261,7 @@ export function NarratorTicker({ pack, state, line }: { pack: ThemePack; state: 
           ) : (
             <span className="mt-0.5 grid h-5 shrink-0 place-items-center rounded-full px-1.5 text-[9px] font-bold uppercase tracking-[.15em]" style={{ background: `${color}33`, color }}>{oracle ? "✦ Oracle" : "Live"}</span>
           )}
-          <span className={c ? "italic text-white/90" : "text-white/90"}>{c ? `“${line.text}”` : line.text}</span>
+          <span className={`line-clamp-3 ${c ? "italic text-white/90" : "text-white/90"}`}>{c ? `“${line.text}”` : line.text}</span>
         </motion.div>
       )}
     </AnimatePresence>

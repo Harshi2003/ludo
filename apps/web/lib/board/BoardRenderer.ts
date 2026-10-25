@@ -2,7 +2,7 @@ import {
   character, leadPiece, members, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
 } from "@ludo/engine";
 import { ANIMATION_TIMING } from "@ludo/net";
-import { Application, Assets, Container, Graphics, Sprite, Text, type Texture } from "pixi.js";
+import { Application, Assets, Container, Graphics, Sprite, Text, type FederatedPointerEvent, type Texture } from "pixi.js";
 import { ELEMENT_GLYPH, sceneOf, tileColor, tileGlyph, zoneColor } from "../visuals";
 import { addGlow, buildIsland, CANDY, candyCane, decorFor, swirl } from "./decor";
 import { drawGlyph } from "./glyphs";
@@ -93,6 +93,8 @@ export class BoardRenderer extends BoardCamera {
   private destroyed = false;
 
   onPick?: (index: number) => void;
+  /** A tap on a tile that isn't a legal move, so the HUD can say why. */
+  onMiss?: (tile: number) => void;
 
   private constructor(pack: ThemePack, board: Board, font: string) {
     super();
@@ -116,6 +118,7 @@ export class BoardRenderer extends BoardCamera {
     r.tw = new Tweener(r.app.ticker);
     r.build(state);
     r.bindInput();
+    r.bindTaps();
     r.app.ticker.add((t) => r.tick(t.deltaMS));
     r.resetCamera(state.players[state.turn].pieces[leadPiece(state, state.turn)].tile, true);
     return r;
@@ -849,8 +852,9 @@ export class BoardRenderer extends BoardCamera {
     if (m) this.previewPath(m, "#fde68a");
   }
 
-  setMoves(moves: MoveOption[] | null, seat: number) {
-    this.highlights.removeChildren().forEach((c) => c.destroy());
+  /** `numbers[i]`: the badge shown on move i, matching the Overseer's list. */
+  setMoves(moves: MoveOption[] | null, seat: number, numbers?: number[]) {
+    this.highlights.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.pathPreview.clear();
     this.shownMoves = moves ?? [];
     if (!moves) return;
@@ -874,6 +878,27 @@ export class BoardRenderer extends BoardCamera {
         sk.position.set(0, -TILE_R - 16);
         c.addChild(sk);
       }
+      const num = numbers?.[index];
+      if (num !== undefined && moves.length > 1) {
+        const bx = TILE_R * 0.8, by = -TILE_R * 0.8;
+        g.circle(bx, by, 10).fill(ringColor).stroke({ width: 2, color: 0x0b0820 });
+        const n = new Text({ text: String(num), style: { fontFamily: this.font, fontSize: 13, fontWeight: "900", fill: 0x0b0820 } });
+        n.anchor.set(0.5);
+        n.position.set(bx, by);
+        c.addChild(n);
+      }
+      // Name what's waiting there, so nobody has to guess what a glowing tile does.
+      const def = this.pack.tiles.find((d) => d.id === t.type);
+      const tag = t.finish ? "" : m.captures.length ? "TAKE OUT" : def && def.base !== "normal" ? def.name.toUpperCase() : "";
+      if (tag) {
+        const label = new Text({
+          text: tag,
+          style: { fontFamily: this.font, fontSize: 13, fontWeight: "800", letterSpacing: 1.5, fill: ringColor, stroke: { color: 0x0b0820, width: 4 } },
+        });
+        label.anchor.set(0.5, 0);
+        label.position.set(0, TILE_R + 17);
+        c.addChild(label);
+      }
       if (m.dir === "back") {
         g.circle(TILE_R + 4, TILE_R * 0.5, 11).fill(0x1e1b4b);
         g.circle(TILE_R + 4, TILE_R * 0.5, 11).stroke({ width: 1.5, color: 0xc4b5fd });
@@ -886,12 +911,50 @@ export class BoardRenderer extends BoardCamera {
       c.hitArea = { contains: (x: number, y: number) => x * x + y * y < (TILE_R + 18) ** 2 };
       c.on("pointerover", () => this.previewPath(m, color));
       c.on("pointerout", () => this.pathPreview.clear());
-      c.on("pointertap", () => {
-        if (this.moved > 10) return;
-        this.onPick?.(index);
-      });
       this.highlights.addChild(c);
     });
+  }
+
+  /**
+   * Resolves taps where the finger lifts, by distance, rather than needing down and up on the
+   * same ring: a little finger wobble, a token on top or the camera easing no longer eat the move.
+   */
+  private bindTaps() {
+    let down: { x: number; y: number } | null = null;
+    // A pinch is never a tap, even when one finger barely moved.
+    const fingers = new Set<number>();
+    const stage = this.app.stage;
+    stage.on("pointerdown", (e: FederatedPointerEvent) => {
+      fingers.add(e.pointerId);
+      down = fingers.size === 1 ? { x: e.global.x, y: e.global.y } : null;
+    });
+    stage.on("pointerupoutside", (e: FederatedPointerEvent) => { fingers.delete(e.pointerId); down = null; });
+    stage.on("pointerup", (e: FederatedPointerEvent) => {
+      fingers.delete(e.pointerId);
+      const from = down;
+      down = null;
+      if (!from || Math.hypot(e.global.x - from.x, e.global.y - from.y) > 14) return;
+      const at = this.world.toLocal(e.global);
+      const near = (p: { x: number; y: number }) => Math.hypot(p.x - at.x, p.y - at.y);
+      const reach = TILE_R + 22;
+      let best = -1;
+      let bestD = reach;
+      this.shownMoves.forEach((m, i) => {
+        const t = this.board.tiles[m.to];
+        const d = near(t.finish ? this.castle : tilePos(t));
+        if (d < bestD) { best = i; bestD = d; }
+      });
+      if (best >= 0) return this.onPick?.(best);
+      if (!this.shownMoves.length) return;
+      const tile = this.board.tiles.find((t) => near(t.finish ? this.castle : tilePos(t)) < TILE_R + 6);
+      if (tile) this.onMiss?.(tile.id);
+    });
+  }
+
+  /** Where a tile sits on screen (for playtests). */
+  screenOf(tile: number) {
+    const t = this.board.tiles[tile];
+    return this.world.toGlobal(t.finish ? this.castle : tilePos(t));
   }
 
   private previewPath(m: MoveOption, color: string) {

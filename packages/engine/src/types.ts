@@ -192,6 +192,8 @@ export interface ThemeRules {
   capture?: { mode: 'checkpoint' | 'start' | 'tow' | 'stun'; back?: number; steal?: number };
   /** Pieces a squad must bring to the finish to win (default 1). */
   winAt?: number;
+  /** Share of path tiles that carry a power (default 0.15 to 0.2 by player count). */
+  powerTiles?: number;
   /** Bonded pieces travel together when one of them moves. */
   bondMarch?: boolean;
   /** Rotating reign: every `every` rounds the next element in `elements` reigns; its champions get +`bonus` on forward moves. */
@@ -286,7 +288,8 @@ export interface PlayerState {
   pieces: PieceState[];
   ult: number;
   skip: number;
-  dice: { mode: DiceMode; turns: number } | null;
+  /** spent: a one-roll mode (six, reverse) was already used this turn. */
+  dice: { mode: DiceMode; turns: number; spent?: boolean } | null;
   captures: number;
   timesCaptured: number;
 }
@@ -306,6 +309,8 @@ export interface Ward {
 export interface Trap {
   tile: number;
   owner: number;
+  /** The owner's piece that set it, credited with any takedown. */
+  piece?: number;
   turns: number;
   effects: Effect[];
   source: string;
@@ -383,6 +388,8 @@ export interface GameState {
   /** Both dice for pick2 worlds, after modifiers (raw values in `rawDice`). */
   dice?: number[] | null;
   rawDice?: number[] | null;
+  /** The last roll was a loaded six, so it earns no lucky throw. */
+  loaded?: boolean;
   moves: MoveOption[];
   usedAbility: boolean;
   extraRolls: number;

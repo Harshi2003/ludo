@@ -19,6 +19,8 @@ export interface BoardGenOptions {
   seed: number;
   zones: ZoneDef[];
   tiles: TileTypeDef[];
+  /** Overrides SPECIAL_RATIO. */
+  specialRatio?: number;
 }
 
 export function generateBoard(opts: BoardGenOptions): Board {
@@ -239,7 +241,7 @@ function placeSpecials(board: Board, opts: BoardGenOptions, rng: { rng: number }
   }
 
   const meshCount = tiles.filter((t) => t.zone >= 0).length;
-  const target = Math.round(meshCount * SPECIAL_RATIO[board.players as PlayerCount]);
+  const target = Math.round(meshCount * (opts.specialRatio ?? SPECIAL_RATIO[board.players as PlayerCount]));
   for (const t of shuffle(rng, candidates.slice())) {
     if (special.size >= target) break;
     if (nearSpecial(t)) continue;

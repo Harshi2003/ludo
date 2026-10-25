@@ -56,7 +56,7 @@ export const magicPack: ThemePack = {
       name,
       description: `${gift}: +3 charge and roll again. Any other house is ${push} back 2.`,
       category: 'neutral' as const,
-      weight: 1,
+      weight: 2,
       effects: [{
         op: 'if_element' as const, element: el,
         then: [{ op: 'charge_ultimate' as const, target: { who: 'self' as const }, n: 3 }, { op: 'extra_roll' as const }],
@@ -69,13 +69,13 @@ export const magicPack: ThemePack = {
       id: 'inferno', name: 'Pyra', title: 'The Dragon Queen', house: 'House of Embers', element: 'fire', role: 'attacker', color: '#ff5a36', glyph: 'flame',
       bio: 'Hatched inside a volcano and never once told no. Pyra burns her enemies from across the field.',
       passive: {
-        id: 'phoenix-blood', name: 'Phoenix Blood', description: 'Every kill feeds the fire: the Ember dashes 2 more. And an Ember never dies quietly: whoever takes one out is burned back to their checkpoint and loses a turn.',
+        id: 'phoenix-blood', name: 'Phoenix Blood', description: 'Every kill feeds the fire: the Ember dashes 3 more. And an Ember never dies quietly: whoever takes one out is burned back to their checkpoint.',
         triggers: [
-          { on: 'capture', effects: [{ op: 'dash', n: 2 }] },
-          { on: 'captured', effects: [{ op: 'send_to_checkpoint', target: { who: 'captor' } }, { op: 'skip_turn', target: { who: 'captor' }, n: 1 }] },
+          { on: 'capture', effects: [{ op: 'dash', n: 3 }] },
+          { on: 'captured', effects: [{ op: 'send_to_checkpoint', target: { who: 'captor' } }] },
         ],
       },
-      active: { id: 'dragonbreath', name: 'Dragonbreath', description: 'Torch the nearest rival ahead within 4. They burn all the way back to the start.', cooldown: 5, requires: { who: 'nearest', range: 4, side: 'ahead' }, effects: [{ op: 'kill', target: { who: 'nearest', range: 4, side: 'ahead' } }] },
+      active: { id: 'dragonbreath', name: 'Dragonbreath', description: 'Torch the nearest rival ahead within 3. They burn all the way back to the start.', cooldown: 6, requires: { who: 'nearest', range: 3, side: 'ahead' }, effects: [{ op: 'kill', target: { who: 'nearest', range: 3, side: 'ahead' } }] },
       squad: [
         {
           id: 'cinder', name: 'Cinder', title: 'The Phoenix', glyph: 'star',
@@ -88,13 +88,13 @@ export const magicPack: ThemePack = {
           active: { id: 'meltdown', name: 'Meltdown', description: 'Melt every rival shield within 5, then dart 3 tiles forward.', cooldown: 3, effects: [{ op: 'strip', target: { who: 'all', range: 5 } }, { op: 'dash', n: 3 }] },
         },
       ],
-      ultimate: { id: 'meteor-rain', name: 'Meteor Rain', description: 'Stars crash down around every Ember on the field. Each rival within 1 tile of them burns back to the start.', cost: 11, effects: [{ op: 'blast', radius: 1, from: 'squad' }] },
+      ultimate: { id: 'meteor-rain', name: 'Meteor Rain', description: 'Stars crash down around every Ember on the field. Each rival within 1 tile of them burns back to the start.', cost: 8, effects: [{ op: 'blast', radius: 1, from: 'squad' }] },
     },
     {
       id: 'aqua', name: 'Nerys', title: 'The Tidecaller', house: 'House of Tides', element: 'water', role: 'defender', color: '#2fb8ff', glyph: 'drop',
       bio: 'The sea answers when Nerys sings, and it always brings her something to drown.',
       passive: { id: 'healing-waters', name: 'Healing Waters', description: 'The first time each Tide is taken out, it washes up at its last checkpoint instead of the start.', secondLife: true },
-      active: { id: 'riptide', name: 'Riptide', description: 'Drag the leading rival within 8 back through the water to the tile right in front of Nerys.', cooldown: 3, requires: { who: 'leader', range: 8, side: 'ahead' }, effects: [{ op: 'pull', target: { who: 'leader', range: 8, side: 'ahead' } }] },
+      active: { id: 'riptide', name: 'Riptide', description: 'Drag the leading rival within 8 back through the water to the tile right in front of Nerys.', cooldown: 4, requires: { who: 'leader', range: 8, side: 'ahead' }, effects: [{ op: 'pull', target: { who: 'leader', range: 8, side: 'ahead' } }] },
       squad: [
         {
           id: 'morrow', name: 'Morrow', title: 'The Leviathan', glyph: 'anchor',
@@ -104,16 +104,16 @@ export const magicPack: ThemePack = {
         {
           id: 'coral', name: 'Coral', title: 'The Pearl Healer', glyph: 'heart',
           bio: 'Gentle, patient and impossible to lose. Coral has never let a friend stay drowned for long.',
-          active: { id: 'second-tide', name: 'Second Tide', description: 'Every fallen Tide waiting at the start rises again at its last checkpoint.', cooldown: 4, effects: [{ op: 'revive' }] },
+          active: { id: 'second-tide', name: 'Second Tide', description: 'Every fallen Tide waiting at the start rises again at its last checkpoint.', cooldown: 5, effects: [{ op: 'revive' }] },
         },
       ],
-      ultimate: { id: 'tsunami', name: 'Tsunami', description: 'A wall of water sweeps every rival ahead within 10 back to their last checkpoint.', cost: 12, requires: { who: 'ahead', range: 10 }, effects: [{ op: 'send_to_checkpoint', target: { who: 'ahead', range: 10 } }] },
+      ultimate: { id: 'tsunami', name: 'Tsunami', description: 'A wall of water sweeps every rival ahead within 10 back to their last checkpoint.', cost: 13, requires: { who: 'ahead', range: 10 }, effects: [{ op: 'send_to_checkpoint', target: { who: 'ahead', range: 10 } }] },
     },
     {
       id: 'terra', name: 'Grom', title: 'The Mountain Golem', house: 'House of Stone', element: 'earth', role: 'controller', color: '#7fd45a', glyph: 'leaf',
       bio: 'Grom does not hurry. Grom does not need to. Anything Grom stares at long enough turns to rock.',
       passive: { id: 'bedrock', name: 'Bedrock', description: 'Stone does not budge. No rival can push, pull, swap or scatter your pieces.', pushImmune: true },
-      active: { id: 'stone-gaze', name: 'Stone Gaze', description: 'Turn the nearest rival within 5 to stone for 2 turns. Stone cannot move, and nobody can land on it.', cooldown: 3, requires: { who: 'nearest', range: 5 }, effects: [{ op: 'petrify', target: { who: 'nearest', range: 5 }, turns: 2 }] },
+      active: { id: 'stone-gaze', name: 'Stone Gaze', description: 'Turn the nearest rival within 6 to stone for 2 turns. Stone cannot move, and nobody can land on it.', cooldown: 3, requires: { who: 'nearest', range: 6 }, effects: [{ op: 'petrify', target: { who: 'nearest', range: 6 }, turns: 2 }] },
       squad: [
         {
           id: 'thessaly', name: 'Thessaly', title: 'The Root Druid', glyph: 'moon',
@@ -123,10 +123,10 @@ export const magicPack: ThemePack = {
         {
           id: 'basalt', name: 'Basalt', title: 'The Gargoyle', glyph: 'shield',
           bio: 'Basalt guarded one cathedral roof for nine hundred years. It is very ready for a change of scenery.',
-          active: { id: 'gargoyle-leap', name: 'Gargoyle Leap', description: 'Basalt spreads its stone wings and lands on your nearest squadmate ahead within 8, forming a bond.', cooldown: 4, effects: [{ op: 'join', range: 8 }] },
+          active: { id: 'gargoyle-leap', name: 'Gargoyle Leap', description: 'Basalt spreads its stone wings and lands on your nearest squadmate ahead within 8, forming a bond.', cooldown: 3, effects: [{ op: 'join', range: 8 }] },
         },
       ],
-      ultimate: { id: 'avalanche', name: 'Avalanche', description: 'Your lead piece rolls 5 tiles forward and crushes every rival in its path back to the start.', cost: 9, effects: [{ op: 'trample', n: 5 }] },
+      ultimate: { id: 'avalanche', name: 'Avalanche', description: 'Your lead piece rolls 6 tiles forward and crushes every rival in its path back to the start.', cost: 7, effects: [{ op: 'trample', n: 6 }] },
     },
     {
       id: 'zephyr', name: 'Aeris', title: 'The Griffin Rider', house: 'House of Gales', element: 'air', role: 'mover', color: '#c9a7ff', glyph: 'wind',
@@ -145,7 +145,7 @@ export const magicPack: ThemePack = {
           active: { id: 'featherfall', name: 'Featherfall', description: 'Kestrel reads the wind. Your next roll is a six.', cooldown: 6, effects: [{ op: 'modify_dice', target: { who: 'self' }, mode: 'six', turns: 1 }] },
         },
       ],
-      ultimate: { id: 'jetstream', name: 'Jetstream', description: 'The storm gets behind you. Your next 2 rolls count double.', cost: 13, effects: [{ op: 'modify_dice', target: { who: 'self' }, mode: 'double', turns: 2 }] },
+      ultimate: { id: 'jetstream', name: 'Jetstream', description: 'The storm gets behind you. For 2 turns, every roll counts double.', cost: 13, effects: [{ op: 'modify_dice', target: { who: 'self' }, mode: 'double', turns: 2 }] },
     },
   ],
   rules: {
@@ -155,6 +155,7 @@ export const magicPack: ThemePack = {
     ultimateCharge: { turn: 1, capture: 2, captured: 3 },
     capture: { mode: 'start' },
     winAt: 2,
+    powerTiles: 0.28,
     bondMarch: true,
     tides: { every: 3, elements: ['earth', 'fire', 'air', 'water'], bonus: 1, name: 'Elemental Tide' },
   },

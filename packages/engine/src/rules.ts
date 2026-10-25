@@ -21,7 +21,7 @@ export interface NewGameOptions {
 
 export function createGame(pack: ThemePack, opts: NewGameOptions): GameState {
   const n = opts.players.length as PlayerCount;
-  const board = opts.board ?? generateBoard({ players: n, seed: opts.seed, zones: pack.zones, tiles: pack.tiles });
+  const board = opts.board ?? generateBoard({ players: n, seed: opts.seed, zones: pack.zones, tiles: pack.tiles, specialRatio: pack.rules.powerTiles });
   const state: GameState = {
     packId: pack.id,
     board,
@@ -78,8 +78,8 @@ const nameOf = (pack: ThemePack, s: GameState, seat: number, piece = 0) =>
 
 const pc = (s: GameState, r: PieceRef) => s.players[r.seat].pieces[r.piece];
 
-/** Waiting on its own start tile: out of reach of rival powers. */
-const atHome = (s: GameState, r: PieceRef) => pc(s, r).tile === s.board.starts[r.seat];
+/** Still inside its own start lane: out of reach of rival powers. */
+const inGate = (s: GameState, r: PieceRef) => s.board.tiles[pc(s, r).tile].start !== undefined;
 
 export function piecesAt(state: GameState, tile: number): PieceRef[] {
   return state.players.flatMap((p) => p.pieces.flatMap((q, piece) => (q.tile === tile ? [{ seat: p.seat, piece }] : [])));
@@ -110,7 +110,7 @@ export function playerProgress(state: GameState, seat: number): number {
 
 /** Two or more of one squad on a tile outside its start: a bond nobody can land on. */
 export function isBond(state: GameState, seat: number, tile: number): boolean {
-  if (tile === state.board.starts[seat]) return false;
+  if (tile === state.board.starts[seat] || state.board.tiles[tile].finish) return false;
   return state.players[seat].pieces.filter((q) => q.tile === tile).length >= 2;
 }
 
@@ -134,6 +134,51 @@ function landable(state: GameState, seat: number, tile: number) {
   return !state.players.some((p) => p.seat !== seat && (isBond(state, p.seat, tile) || p.pieces.some((q) => q.tile === tile && q.stone > 0)));
 }
 
+/** Where forced movement can't go: sealed tiles and every other house's start lane. */
+function noGo(state: GameState, seat: number): Set<number> {
+  const out = blockedFor(state, seat);
+  for (const t of state.board.tiles) if (t.start !== undefined && t.start !== seat) out.add(t.id);
+  return out;
+}
+
+/** Forced movement stops short of tiles it may not end on. */
+function settle(state: GameState, seat: number, path: number[]): number[] {
+  let n = path.length;
+  while (n && !landable(state, seat, path[n - 1])) n--;
+  return path.slice(0, n);
+}
+
+/** The nearest checkpoint at or behind a tile, never in another house's start lane. */
+function checkpointBehind(state: GameState, seat: number, tile: number): number {
+  const b = state.board;
+  const seen = new Set([tile]);
+  const q = [tile];
+  while (q.length) {
+    const t = q.shift()!;
+    if (b.tiles[t].checkpoint) return t;
+    for (const p of b.tiles[t].prev) {
+      if (seen.has(p) || (b.tiles[p].start !== undefined && b.tiles[p].start !== seat)) continue;
+      seen.add(p);
+      q.push(p);
+    }
+  }
+  return b.starts[seat];
+}
+
+/** Where "back to the last checkpoint" lands a piece: never forward of where it stands. */
+function fallback(state: GameState, r: PieceRef): number {
+  const q = pc(state, r);
+  const b = state.board;
+  return progress(b, q.checkpoint) <= progress(b, q.tile) ? q.checkpoint : checkpointBehind(state, r.seat, q.tile);
+}
+
+/** Moonwells and wards: a takedown power can't reach pieces standing there. */
+const killProof = (pack: ThemePack, state: GameState) => (r: PieceRef) => !isSanctuary(pack, state, pc(state, r).tile);
+
+/** The target filter an ability's `requires` check shares with its effects. */
+const requireFilter = (pack: ThemePack, state: GameState, def: AbilityDef) =>
+  def.effects.some((e) => e.op === 'kill') ? killProof(pack, state) : undefined;
+
 // ─── Turn flow ─────────────────────────────────────────────────────────────
 
 function startTurn(pack: ThemePack, state: GameState, first = false) {
@@ -150,6 +195,7 @@ function startTurn(pack: ThemePack, state: GameState, first = false) {
       if (q.snare && --q.snare.turns <= 0) q.snare = null;
     }
     if (p.dice && --p.dice.turns <= 0) p.dice = null;
+    else if (p.dice) p.dice.spent = false;
     state.traps = state.traps.filter((t) => t.owner !== p.seat || --t.turns > 0);
     state.blocks = state.blocks.filter((b) => b.owner !== p.seat || --b.turns > 0);
     state.wards = state.wards.filter((w) => w.owner !== p.seat || --w.turns > 0);
@@ -262,7 +308,7 @@ function endMove(pack: ThemePack, state: GameState) {
   // A loaded six was bought with a power, so it doesn't earn the lucky throw on top.
   const lucky = pack.rules.dice === 'pick2'
     ? !!state.rawDice && state.rawDice[0] === state.rawDice[1]
-    : pack.rules.extraRollOnSix && state.rawRoll === 6 && p.dice?.mode !== 'six';
+    : pack.rules.extraRollOnSix && state.rawRoll === 6 && !state.loaded;
   if ((state.bonusRoll || lucky) && state.extraRolls < MAX_EXTRA_ROLLS && p.skip === 0) {
     state.extraRolls++;
     Object.assign(state, { phase: 'roll', roll: null, rawRoll: null, dice: null, rawDice: null, moves: [], bonusRoll: false });
@@ -282,15 +328,17 @@ export function step(pack: ThemePack, state: GameState, action: Action): GameSta
   if (action.type === 'roll') {
     if (state.phase !== 'roll') throw new Error('Not time to roll');
     const floor = character(pack, p.character).passive.diceFloor ?? 0;
+    // "Next roll" modes (six, reverse) touch one roll per turn, not the extra rolls after it.
+    const mode = p.dice && !p.dice.spent ? p.dice.mode : undefined;
     const modify = (raw: number) => {
       let n = raw;
-      if (p.dice?.mode === 'halve') n = Math.ceil(n / 2);
-      if (p.dice?.mode === 'max3') n = Math.min(n, 3);
-      if (p.dice?.mode === 'plus1') n = n + 1;
-      if (p.dice?.mode === 'double') n = n * 2;
+      if (mode === 'halve') n = Math.ceil(n / 2);
+      if (mode === 'max3') n = Math.min(n, 3);
+      if (mode === 'plus1') n = n + 1;
+      if (mode === 'double') n = n * 2;
       return Math.max(n, floor);
     };
-    const throwDie = (i: number) => (i === 0 && p.dice?.mode === 'six' ? 6 : 1 + randInt(state, 6));
+    const throwDie = (i: number) => (i === 0 && mode === 'six' ? 6 : 1 + randInt(state, 6));
     const raws = pack.rules.dice === 'pick2' ? [throwDie(0), throwDie(1)] : [throwDie(0)];
     const ns = raws.map(modify);
     state.rawRoll = Math.max(...raws);
@@ -308,7 +356,9 @@ export function step(pack: ThemePack, state: GameState, action: Action): GameSta
     const extra = bonus ? ` · ${bonus > 0 ? '+' : ''}${bonus} going forward` : '';
     const said = raws.map((r, i) => `${r}${ns[i] !== r ? ` (counts as ${ns[i]})` : ''}`).join(' and ');
     const doubles = raws.length > 1 && raws[0] === raws[1] ? '. Doubles!' : '';
-    const flip = p.dice?.mode === 'reverse' ? ' · backward only' : '';
+    const flip = mode === 'reverse' ? ' · backward only' : '';
+    if (p.dice && (mode === 'six' || mode === 'reverse')) p.dice.spent = true;
+    state.loaded = mode === 'six';
     emit(state, { kind: 'roll', seat: p.seat, value: state.roll, dice: raws, msg: `${houseName(pack, p)} rolled ${said}${doubles}${extra}${flip}` });
     if (!state.moves.length) {
       emit(state, { kind: 'no_moves', seat: p.seat, msg: 'No path is open' });
@@ -363,14 +413,15 @@ export function step(pack: ThemePack, state: GameState, action: Action): GameSta
       for (const j of [piece, ...bondmates(state, p.seat, piece)]) {
         if ((state.phase as string) === 'over') break;
         const def = memberDef(pack, state, p.seat, j).active;
-        if (j !== piece && def.requires && !resolveTargets(state, p.seat, def.requires, { piece: j }).length) continue;
+        if (j !== piece && def.requires && !resolveTargets(state, p.seat, def.requires, { piece: j }, requireFilter(pack, state, def)).length) continue;
         p.pieces[j].cooldown = (def.cooldown ?? 3) + 1;
         const who = nameOf(pack, state, p.seat, j);
         emit(state, { kind: 'ability', seat: p.seat, piece: j, source: def.id, msg: j === piece ? `${who} casts ${def.name}!` : `Combo! ${who} adds ${def.name}` });
         runEffects(pack, state, p.seat, def.effects, { source: def.id, fromAbility: true, piece: j });
       }
     }
-    if ((state.phase as string) !== 'over' && p.skip > 0) startTurn(pack, state);
+    // A power that costs the caster a turn (say, killing an Ember) takes the next one, not this roll:
+    // the same as a capture made by moving.
     return state;
   }
   return state;
@@ -403,7 +454,7 @@ export function forwardBonus(pack: ThemePack, state: GameState, seat: number, pi
 export function legalMoves(pack: ThemePack, state: GameState, seat: number, n: number): MoveOption[] {
   const p = state.players[seat];
   const blocked = blockedFor(state, seat);
-  const dirs: ('fwd' | 'back')[] = p.dice?.mode === 'reverse' ? ['back']
+  const dirs: ('fwd' | 'back')[] = p.dice?.mode === 'reverse' && !p.dice.spent ? ['back']
     : state.storm || pack.rules.movement === 'forward' ? ['fwd'] : ['fwd', 'back'];
   // Bonded pieces share a tile, so their routes are the same: offer each route once.
   const seen = new Set<string>();
@@ -434,24 +485,28 @@ export function canUseAbility(pack: ThemePack, state: GameState, which: 'active'
   const p = state.players[state.turn];
   const i = which === 'ultimate' ? leadPiece(state, p.seat) : piece;
   const q = p.pieces[i];
-  if (!q) return false;
+  // A piece on the throne is out of the fight.
+  if (!q || state.board.tiles[q.tile].finish) return false;
   const def = abilityDef(pack, state, which, p.seat, i);
   if (which === 'active' && (q.cooldown > 0 || q.stone > 0)) return false;
   if (which === 'ultimate' && p.ult < (def.cost ?? 8)) return false;
-  return !def.requires || resolveTargets(state, p.seat, def.requires, { piece: i }).length > 0;
+  return !def.requires || resolveTargets(state, p.seat, def.requires, { piece: i }, requireFilter(pack, state, def)).length > 0;
 }
 
 // ─── Movement & landing ──────────────────────────────────────────────────
 
 function travel(pack: ThemePack, state: GameState, r: PieceRef, path: number[], dir: 'fwd' | 'back') {
   const q = pc(state, r);
-  if (dir === 'fwd') {
-    for (const t of path) {
-      const tile = state.board.tiles[t];
-      if (tile.checkpoint && progress(state.board, t) > progress(state.board, q.checkpoint)) {
-        q.checkpoint = t;
-        emit(state, { kind: 'checkpoint', seat: r.seat, piece: r.piece, tile: t, msg: `${nameOf(pack, state, r.seat, r.piece)} reached a checkpoint` });
-      }
+  const b = state.board;
+  if (dir === 'fwd' && path.length) {
+    // A jump (leap, ferry, teleport) still counts every checkpoint it flew over.
+    const last = path[path.length - 1];
+    const behind = checkpointBehind(state, r.seat, last);
+    const walked = path.filter((t) => b.tiles[t].checkpoint).at(-1);
+    const cp = walked !== undefined && progress(b, walked) === progress(b, behind) ? walked : behind;
+    if (progress(b, cp) > progress(b, q.checkpoint)) {
+      q.checkpoint = cp;
+      emit(state, { kind: 'checkpoint', seat: r.seat, piece: r.piece, tile: cp, msg: `${nameOf(pack, state, r.seat, r.piece)} reached a checkpoint` });
     }
   }
   if (path.length) q.tile = path[path.length - 1];
@@ -493,7 +548,7 @@ function land(pack: ThemePack, state: GameState, r: PieceRef, tile: number, o: L
   if (trapIdx >= 0) {
     const trap = state.traps.splice(trapIdx, 1)[0];
     emit(state, { kind: 'trap', seat: trap.owner, targets: [r.seat], hits: [r.piece], tile, source: trap.source, msg: `${nameOf(pack, state, r.seat, r.piece)} triggers ${nameOf(pack, state, trap.owner)}'s trap` });
-    runEffects(pack, state, r.seat, trap.effects, { source: trap.source, tile, piece: r.piece });
+    runEffects(pack, state, r.seat, trap.effects, { source: trap.source, tile, piece: r.piece, by: { seat: trap.owner, piece: trap.piece ?? 0 } });
   }
 
   if (o.tileEffects && (state.phase as string) !== 'over' && q.tile === tile) {
@@ -524,11 +579,11 @@ function takeDown(pack: ThemePack, state: GameState, by: PieceRef, victim: Piece
   let tail = '';
   if (character(pack, v.character).passive.secondLife && !vp.saved) {
     vp.saved = true;
-    vp.tile = vp.checkpoint;
+    vp.tile = fallback(state, victim);
     how = 'drowns';
     tail = ', who rises again at the last checkpoint';
   } else if (rule.mode === 'tow') {
-    const path = forcedPath(state.board, vp.tile, -(rule.back ?? 6), new Set());
+    const path = settle(state, victim.seat, forcedPath(state.board, vp.tile, -(rule.back ?? 6), noGo(state, victim.seat)));
     if (path.length) vp.tile = path[path.length - 1];
     how = 'tows';
     tail = ` back ${rule.back ?? 6}`;
@@ -540,7 +595,7 @@ function takeDown(pack: ThemePack, state: GameState, by: PieceRef, victim: Piece
     vp.tile = state.board.starts[victim.seat];
     how = 'takes out';
     tail = ', back to the start';
-  } else vp.tile = vp.checkpoint;
+  } else vp.tile = fallback(state, victim);
   vp.stone = 0;
   vp.snare = null;
   a.captures++;
@@ -586,6 +641,8 @@ interface Ctx {
   mimic?: boolean;
   /** The acting piece of the casting seat. */
   piece?: number;
+  /** Whose trap is going off: a takedown it causes is theirs. */
+  by?: PieceRef;
 }
 
 /** Ops that act from the caster's own piece; world events can't use them. */
@@ -594,7 +651,11 @@ export const SELF_OPS = new Set<Effect['op']>([
   'kill', 'pull', 'magnet', 'scramble', 'leapfrog', 'trample', 'blast', 'scorch', 'ward', 'revive', 'recall', 'swap_ally', 'gather', 'join',
 ]);
 
-export function resolveTargets(state: GameState, seat: number, spec: TargetSpec, ctx: Partial<Ctx>): PieceRef[] {
+/**
+ * Rival pieces still inside their gates, already home or turned to stone can't be picked:
+ * a power aimed at them would fizzle. `keep` narrows the pool further (say, nobody on a Moonwell).
+ */
+export function resolveTargets(state: GameState, seat: number, spec: TargetSpec, ctx: Partial<Ctx>, keep?: (r: PieceRef) => boolean): PieceRef[] {
   if (seat === WORLD) return worldTargets(state, spec);
   const origin = ctx.piece ?? 0;
   const me = state.players[seat].pieces[origin];
@@ -606,8 +667,8 @@ export function resolveTargets(state: GameState, seat: number, spec: TargetSpec,
   const range = spec.range ?? Infinity;
   const opps = state.players
     .filter((q) => q.seat !== seat)
-    .flatMap((q) => q.pieces.map((x, piece) => ({ seat: q.seat, piece, tile: x.tile })))
-    .filter((o) => !atHome(state, o) && !b.tiles[o.tile].finish)
+    .flatMap((q) => q.pieces.map((x, piece) => ({ seat: q.seat, piece, tile: x.tile, stone: x.stone })))
+    .filter((o) => !inGate(state, o) && !b.tiles[o.tile].finish && !o.stone && (!keep || keep(o)))
     .map((o) => ({ seat: o.seat, piece: o.piece, d: distance(b, me.tile, o.tile, range), prog: progress(b, o.tile) }))
     .filter((o) => o.d <= range);
   const ref = (o: { seat: number; piece: number }) => ({ seat: o.seat, piece: o.piece });
@@ -633,7 +694,8 @@ export function resolveTargets(state: GameState, seat: number, spec: TargetSpec,
 /** The world sees each squad by its lead piece, except table-wide effects that reach every piece. */
 function worldTargets(state: GameState, spec: TargetSpec): PieceRef[] {
   if (spec.who === 'all' || spec.who === 'everyone') {
-    return state.players.flatMap((q) => q.pieces.map((_, piece) => ({ seat: q.seat, piece })));
+    // Pieces already home are out of the game; the world leaves them be.
+    return state.players.flatMap((q) => q.pieces.flatMap((x, piece) => (state.board.tiles[x.tile].finish ? [] : [{ seat: q.seat, piece }])));
   }
   const all = state.players
     .map((q) => ({ seat: q.seat, piece: leadPiece(state, q.seat), prog: playerProgress(state, q.seat) }))
@@ -708,14 +770,14 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
   const seatsOf = (rs: PieceRef[]) => rs.filter((r, i) => rs.findIndex((x) => x.seat === r.seat) === i);
 
   if (seat === WORLD && SELF_OPS.has(e.op)) return;
-  const targets = 'target' in e ? resolveTargets(state, seat, e.target, ctx) : [];
+  const targets = 'target' in e ? resolveTargets(state, seat, e.target, ctx, e.op === 'kill' ? killProof(pack, state) : undefined) : [];
 
   switch (e.op) {
     case 'move':
       for (const r of targets) {
         if (!hits(r) || firm(r)) continue;
         const q = pc(state, r);
-        const path = forcedPath(b, q.tile, e.n, blockedFor(state, r.seat));
+        const path = settle(state, r.seat, forcedPath(b, q.tile, e.n, noGo(state, r.seat)));
         if (!path.length) continue;
         travel(pack, state, r, path, e.n > 0 ? 'fwd' : 'back');
         mover(r, path, `${name(r)} ${e.n > 0 ? 'surges forward' : 'is pushed back'} ${path.length}`);
@@ -745,15 +807,16 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
 
     case 'send_to_checkpoint':
       for (const r of targets) {
-        if (!hits(r)) continue;
         const q = pc(state, r);
-        if (q.tile === q.checkpoint) continue;
-        q.tile = q.checkpoint;
+        const back = fallback(state, r);
+        // Already at (or behind) its last checkpoint: nothing to wash away, and no shield spent.
+        if (progress(b, back) >= progress(b, q.tile) || !hits(r)) continue;
+        q.tile = back;
         mover(r, [q.tile], `${name(r)} is washed back to a checkpoint`);
       }
       break;
 
-    case 'kill':
+    case 'kill': {
       for (const r of targets) {
         const q = pc(state, r);
         if (r.seat === seat) {
@@ -763,17 +826,30 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
             say(`${name(r)}'s shield saves them`, [r]);
             continue;
           }
-          q.tile = b.starts[seat];
+          // Someone else's trap: the kill is theirs, with everything a capture brings.
+          if (ctx.by && ctx.by.seat !== seat) {
+            if (!isSanctuary(pack, state, q.tile)) takeDown(pack, state, ctx.by, r, q.tile);
+            continue;
+          }
+          const p = state.players[seat];
+          const saved = !!character(pack, p.character).passive.secondLife && !q.saved;
+          if (saved) q.saved = true;
+          q.tile = saved ? fallback(state, r) : b.starts[seat];
           q.stone = 0;
           q.snare = null;
-          state.players[seat].timesCaptured++;
-          emit(state, { kind: 'capture', seat, piece: r.piece, targets: [seat], hits: [r.piece], tile: ctx.tile, to: q.tile, source: ctx.source, msg: `${name(r)} falls and returns to the start` });
+          p.timesCaptured++;
+          chargeUlt(pack, p, pack.rules.ultimateCharge.captured);
+          emit(state, {
+            kind: 'capture', seat, piece: r.piece, targets: [seat], hits: [r.piece], tile: ctx.tile, to: q.tile, source: ctx.source,
+            msg: saved ? `${name(r)} falls, then rises again at the last checkpoint` : `${name(r)} falls and returns to the start`,
+          });
           continue;
         }
-        if (!hits(r) || isSanctuary(pack, state, q.tile)) continue;
+        if (isSanctuary(pack, state, q.tile) || !hits(r)) continue;
         takeDown(pack, state, self, r, q.tile);
       }
       break;
+    }
 
     case 'skip_turn':
       for (const r of seatsOf(targets)) {
@@ -806,7 +882,8 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
 
     case 'swap': {
       const r = targets[0];
-      if (!r || !me || !hits(r) || firm(r)) break;
+      // From inside your gates a swap would drop a rival into your start lane.
+      if (!r || !me || inGate(state, self) || !hits(r) || firm(r)) break;
       const q = pc(state, r);
       [me.tile, q.tile] = [q.tile, me.tile];
       mover(self, [me.tile], `${name(self)} swaps places with ${name(r)}`);
@@ -843,16 +920,17 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
     case 'place_trap':
       if (!me) break;
       state.traps = state.traps.filter((t) => t.tile !== me.tile);
-      state.traps.push({ tile: me.tile, owner: seat, turns: e.turns + 1, effects: e.effects, source: ctx.source });
+      state.traps.push({ tile: me.tile, owner: seat, piece: origin, turns: e.turns + 1, effects: e.effects, source: ctx.source });
       say(`${name(self)} leaves a trap behind`);
       break;
 
     case 'scorch': {
       if (!me) break;
-      const tiles = forcedPath(b, me.tile, -e.n, new Set()).filter((t) => b.tiles[t].start === undefined);
+      // Moonwells don't burn.
+      const tiles = forcedPath(b, me.tile, -e.n, noGo(state, seat)).filter((t) => b.tiles[t].start === undefined && !isSanctuary(pack, state, t));
       if (!tiles.length) break;
       state.traps = state.traps.filter((t) => !tiles.includes(t.tile));
-      for (const t of tiles) state.traps.push({ tile: t, owner: seat, turns: e.turns + 1, effects: e.effects, source: ctx.source });
+      for (const t of tiles) state.traps.push({ tile: t, owner: seat, piece: origin, turns: e.turns + 1, effects: e.effects, source: ctx.source });
       say(`${name(self)} leaves ${tiles.length} tiles burning behind`);
       break;
     }
@@ -942,7 +1020,7 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
       if (!me) break;
       const dest = forcedPath(b, me.tile, 1, new Set())[0];
       const r = targets[0];
-      if (!r || dest === undefined || b.tiles[dest].finish || !hits(r) || firm(r)) break;
+      if (!r || dest === undefined || b.tiles[dest].finish || b.tiles[dest].start !== undefined || !landable(state, r.seat, dest) || !hits(r) || firm(r)) break;
       pc(state, r).tile = dest;
       mover(r, [dest], `${name(r)} is dragged right in front of ${name(self)}`);
       break;
@@ -955,7 +1033,7 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
         const steps = Math.min(e.n, distance(b, me.tile, q.tile, e.range) - 1);
         if (steps <= 0 || !hits(r) || firm(r)) continue;
         const ahead = progress(b, q.tile) > progress(b, me.tile);
-        const path = forcedPath(b, q.tile, ahead ? -steps : steps, blockedFor(state, r.seat));
+        const path = settle(state, r.seat, forcedPath(b, q.tile, ahead ? -steps : steps, noGo(state, r.seat)));
         if (!path.length) continue;
         travel(pack, state, r, path, ahead ? 'back' : 'fwd');
         mover(r, path, `${name(r)} is sucked toward ${name(self)}`);
@@ -965,7 +1043,8 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
 
     case 'scramble': {
       if (!me) break;
-      const refs = [self, ...resolveTargets(state, seat, { who: 'all', range: e.range }, ctx).filter((r) => hits(r) && !firm(r))];
+      // From inside your gates you stir the wind but stay out of it, so no rival lands in your start lane.
+      const refs = [...(inGate(state, self) ? [] : [self]), ...resolveTargets(state, seat, { who: 'all', range: e.range }, ctx).filter((r) => hits(r) && !firm(r))];
       if (refs.length < 2) {
         say('The wind finds nobody to scatter');
         break;
@@ -987,7 +1066,7 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
       const dest = forcedPath(b, pc(state, r).tile, 1, new Set())[0];
       if (dest === undefined || !landable(state, seat, dest)) break;
       if (hits(r) && !firm(r)) {
-        const path = forcedPath(b, pc(state, r).tile, -e.n, blockedFor(state, r.seat));
+        const path = settle(state, r.seat, forcedPath(b, pc(state, r).tile, -e.n, noGo(state, r.seat)));
         if (path.length) {
           travel(pack, state, r, path, 'back');
           mover(r, path, `${name(r)} is knocked back ${path.length}`);
@@ -1002,23 +1081,28 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
     case 'trample': {
       if (!me) break;
       const victims = (p: number[]) => p.reduce((n, t) => n + (isSanctuary(pack, state, t) ? 0 : piecesAt(state, t).filter((v) => v.seat !== seat).length), 0);
-      const paths = enumeratePaths(b, me.tile, e.n, 'fwd', new Set());
+      // Bonds get crushed, but stone can't be, so the avalanche never ends on top of it.
+      const onStone = (t: number) => piecesAt(state, t).some((v) => v.seat !== seat && pc(state, v).stone > 0);
+      const paths = enumeratePaths(b, me.tile, e.n, 'fwd', new Set()).filter((p) => !onStone(p[p.length - 1]));
       if (!paths.length) break;
       const path = paths.sort((x, y) => victims(y) - victims(x) || progress(b, y[y.length - 1]) - progress(b, x[x.length - 1]))[0];
+      const end = path[path.length - 1];
       travel(pack, state, self, path, 'fwd');
       mover(self, path, `${name(self)} thunders ${path.length} tiles forward`);
       for (const t of path) {
+        // An Ember's dying curse can throw the caster back mid charge: the avalanche stops there.
+        if (me.tile !== end || state.phase === 'over') break;
         if (isSanctuary(pack, state, t) || b.tiles[t].finish) continue;
         for (const v of piecesAt(state, t)) if (v.seat !== seat && hits(v)) takeDown(pack, state, self, v, t);
       }
-      if (state.phase !== 'over') land(pack, state, self, me.tile, { dir: 'fwd', capture: false, tileEffects: false });
+      if (state.phase !== 'over' && me.tile === end) land(pack, state, self, end, { dir: 'fwd', capture: false, tileEffects: false });
       break;
     }
 
     case 'blast': {
       if (!me) break;
       const centers = (e.from === 'squad' ? state.players[seat].pieces.map((_, piece) => ({ seat, piece })) : [self])
-        .filter((r) => !atHome(state, r) && !isFinished(state, r)).map((r) => pc(state, r).tile);
+        .filter((r) => !inGate(state, r) && !isFinished(state, r)).map((r) => pc(state, r).tile);
       const victims = resolveTargets(state, seat, { who: 'all' }, ctx)
         .filter((v) => centers.some((c) => distance(b, c, pc(state, v).tile, e.radius) <= e.radius) && !isSanctuary(pack, state, pc(state, v).tile));
       if (!victims.length) say('The blast hits only empty ground');
@@ -1053,7 +1137,7 @@ function runEffect(pack: ThemePack, state: GameState, seat: number, e: Effect, c
 
     case 'revive': {
       const fallen = state.players[seat].pieces.flatMap((q, piece) =>
-        piece !== origin && q.tile === b.starts[seat] && q.checkpoint !== b.starts[seat] ? [{ seat, piece }] : []);
+        piece !== origin && q.tile === b.starts[seat] && q.checkpoint !== b.starts[seat] && landable(state, seat, q.checkpoint) ? [{ seat, piece }] : []);
       if (!fallen.length) say('Nobody waits to be raised');
       for (const r of fallen) {
         const q = pc(state, r);

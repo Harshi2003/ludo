@@ -11,7 +11,7 @@ export interface WorldEntry {
 
 const KEY = "ludo:worlds";
 const SELECTED = "ludo:world";
-const BUILT_IN: WorldEntry[] = [magicPack, sfPack, partyPack].map((pack) => ({ pack, createdAt: 0, builtIn: true }));
+const BUILT_IN: WorldEntry[] = [sfPack, magicPack, partyPack].map((pack) => ({ pack, createdAt: 0, builtIn: true }));
 
 export const isPartyWorld = (pack: ThemePack) => pack.id === partyPack.id;
 
@@ -50,7 +50,7 @@ export function saveWorld(pack: ThemePack, prompt?: string) {
 
 export function deleteWorld(id: string) {
   write(read().filter((w) => w.pack.id !== id));
-  if (selectedWorldId() === id) selectWorld(magicPack.id);
+  if (selectedWorldId() === id) selectWorld(sfPack.id);
   void fetch(`/api/worlds?id=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
 }
 
@@ -87,9 +87,9 @@ export async function syncWorlds(): Promise<boolean> {
 
 export function selectedWorldId(): string {
   try {
-    return localStorage.getItem(SELECTED) ?? magicPack.id;
+    return localStorage.getItem(SELECTED) ?? sfPack.id;
   } catch {
-    return magicPack.id;
+    return sfPack.id;
   }
 }
 

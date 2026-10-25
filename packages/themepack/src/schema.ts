@@ -144,7 +144,7 @@ export const themePackSchema = z.object({
     startName: z.string().min(2).max(40),
   }).strict(),
   zones: z.array(zone).min(4).max(6),
-  tiles: z.array(tile).min(8).max(18),
+  tiles: z.array(tile).min(8).max(20),
   characters: z.array(character).length(4),
   rules: z.object({
     stormRound: z.object({ 2: z.number().int().min(10).max(40), 3: z.number().int().min(10).max(40), 4: z.number().int().min(10).max(40) }).strict(),
@@ -155,6 +155,7 @@ export const themePackSchema = z.object({
     dice: z.enum(['one', 'pick2']).optional(),
     winAt: z.number().int().min(1).max(3).optional(),
     bondMarch: z.boolean().optional(),
+    powerTiles: z.number().min(0.1).max(0.4).optional(),
     movement: z.enum(['both', 'forward']).optional(),
     capture: z.object({
       mode: z.enum(['checkpoint', 'start', 'tow', 'stun']),

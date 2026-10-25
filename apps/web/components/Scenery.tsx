@@ -198,7 +198,8 @@ export function HeroArt({ pack, scene, chars }: { pack: ThemePack; scene: Scene;
     <div className="relative mx-auto aspect-square w-[min(84vw,440px)]">
       <div className="absolute inset-[16%] rounded-full" style={{ background: `radial-gradient(circle, color-mix(in srgb, ${glow} 45%, transparent), color-mix(in srgb, ${glow} 12%, transparent) 45%, transparent 70%)` }} />
       {scene === "city" ? <GoldenGate /> : scene === "candy" ? <SugarPalace /> : <CrystalCastle />}
-      <div className={spin ? "animate-spin-slow absolute inset-0" : "absolute inset-0"}>
+      {/* The bridge is the whole picture in Fog City; no champions floating over it. */}
+      {scene !== "city" && <div className={spin ? "animate-spin-slow absolute inset-0" : "absolute inset-0"}>
         {chars.map((c, i) => {
           // Fantasy: evenly around a circle. Elsewhere: the four corners, clear of the landmark.
           const a = spin ? (i / chars.length) * Math.PI * 2 - Math.PI / 2 : [-2.4, -0.75, 0.75, 2.4][i % 4];
@@ -211,7 +212,7 @@ export function HeroArt({ pack, scene, chars }: { pack: ThemePack; scene: Scene;
             </div>
           );
         })}
-      </div>
+      </div>}
     </div>
   );
 }
