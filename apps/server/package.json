@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:party": "tsx watch src/party-ludo/index.ts",
     "start": "tsx src/index.ts"
   },
   "dependencies": {

@@ -1,23 +1,19 @@
-import { Container, Graphics, Sprite } from "pixi.js";
-import { COL_W, wave } from "./layout";
-import { glowTexture, mix } from "./util";
+import { Container, Graphics, Sprite, TilingSprite } from "pixi.js";
+import { terrainAt, type TerrainSlice } from "./layout";
+import { glowTexture, groundTexture, mix } from "./util";
 
 export type DecorKind = "shrine" | "forest" | "falls" | "peaks" | "sky" | "crystal";
 
-/** A zone's own decor wins; then Magic Ludo zone ids; then a default per zone type. */
 export function decorFor(zoneId: string | undefined, zoneType: string | undefined, decor?: DecorKind): DecorKind {
   if (decor) return decor;
   const byId: Record<string, DecorKind> = { forest: "forest", falls: "falls", ridge: "peaks", ladders: "sky", gate: "crystal" };
-  if (zoneId && byId[zoneId]) return byId[zoneId];
   const byType: Record<string, DecorKind> = { crossing: "forest", merge: "falls", branch: "peaks", lane: "sky", funnel: "crystal" };
-  return (zoneType && byType[zoneType]) || "peaks";
+  return (zoneId && byId[zoneId]) || (zoneType && byType[zoneType]) || "peaks";
 }
 
 interface IslandSpec {
-  x0: number;
-  x1: number;
-  top: number; // raw y (before wave) of surface top edge
-  bottom: number;
+  profile: TerrainSlice[];
+  path: { x: number; y: number }[];
   color: string;
   bg: string;
   kind: DecorKind;
@@ -26,165 +22,106 @@ interface IslandSpec {
 
 function rng(seed: number) {
   let s = seed >>> 0 || 1;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
+  return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
 }
 
-const waveAt = (x: number) => wave(x / COL_W);
-
-/**
- * A floating island per zone: lit surface the tiles sit on, a rocky
- * underside, and themed props (trees, waterfalls, peaks, crystals).
- */
-export function buildIsland(spec: IslandSpec): { back: Container; front: Container; glows: Sprite[] } {
+/** Organic terrain in screen-facing axes, with clear space reserved for every tile. */
+export function buildIsland(spec: IslandSpec, portrait = false): { back: Container; front: Container; glows: Sprite[] } {
   const r = rng(spec.seed);
   const back = new Container();
   const front = new Container();
+  back.rotation = front.rotation = portrait ? -Math.PI / 2 : 0;
   const glows: Sprite[] = [];
-  const col = spec.color;
-  // Stadium-shaped plate: semicircular ends, wavy top and bottom.
-  const capR = Math.min((spec.bottom - spec.top) / 2, (spec.x1 - spec.x0) / 2);
-  const inset = (x: number) => {
-    const d = Math.min(x - spec.x0, spec.x1 - x);
-    return d >= capR ? 0 : capR - Math.sqrt(Math.max(0, capR * capR - (capR - d) ** 2));
+  const start = spec.profile[0].x;
+  const end = spec.profile[spec.profile.length - 1].x;
+  const project = (along: number, across: number) => portrait ? { x: -across, y: along } : { x: along, y: across };
+  const path = spec.path.map((p) => project(p.x, p.y));
+  const base: Record<DecorKind, string> = {
+    forest: "#153b38", falls: "#163e4b", peaks: "#343747", sky: "#302d4b", crystal: "#233c48", shrine: "#303044",
   };
-  const xs: number[] = [];
-  for (let x = spec.x0; x < spec.x1; x += Math.min(x - spec.x0, spec.x1 - x) < capR ? 6 : 24) xs.push(x);
-  xs.push(spec.x1);
-  const topY = (x: number) => spec.top + waveAt(x) + inset(x);
-  const botY = (x: number) => spec.bottom + waveAt(x) - inset(x);
+  const ground = mix(base[spec.kind], spec.color, 0.13);
+  const rim = mix(ground, "#9ad4bc", 0.36);
+  const stone = mix(ground, "#080f20", 0.56);
+  const middle = terrainAt(spec.profile, (start + end) / 2);
+  const center = project((start + end) / 2, (middle.top + middle.bottom) / 2);
+  const aura = addGlow(back, center.x, center.y, spec.color, 1, 0.09);
+  aura.width = portrait ? middle.bottom - middle.top + 260 : end - start + 240;
+  aura.height = portrait ? end - start + 240 : middle.bottom - middle.top + 260;
 
-  // Aura behind the island.
-  const aura = new Sprite(glowTexture());
-  aura.anchor.set(0.5);
-  aura.tint = col;
-  aura.alpha = 0.22;
-  aura.blendMode = "add";
-  aura.position.set((spec.x0 + spec.x1) / 2, (spec.top + spec.bottom) / 2 + waveAt((spec.x0 + spec.x1) / 2));
-  aura.width = spec.x1 - spec.x0 + 500;
-  aura.height = spec.bottom - spec.top + 520;
-  back.addChild(aura);
-
-  // Props behind the surface (above its top edge).
-  const props = new Graphics();
-  back.addChild(props);
-  const dark = mix(spec.bg, col, 0.22);
-  const darker = mix(spec.bg, col, 0.1);
-
-  if (spec.kind === "forest") {
-    for (let x = spec.x0 + 20; x < spec.x1 - 10; x += 26 + r() * 22) {
-      const h = 60 + r() * 90;
-      const w = 22 + r() * 16;
-      const base = topY(x) + 18;
-      const c = mix(dark, col, 0.15 + r() * 0.2);
-      for (let k = 0; k < 3; k++) {
-        const y = base - (h * k) / 3.2;
-        const ww = w * (1 - k * 0.22);
-        props.poly([x - ww, y, x, y - h * 0.5, x + ww, y]).fill({ color: c, alpha: 0.95 });
-      }
-      props.rect(x - 2.5, base - 4, 5, 14).fill({ color: darker });
-      if (r() < 0.35) glows.push(addGlow(back, x + (r() - 0.5) * 40, base - h * 0.6, "#a7f3d0", 0.6, 0.35));
-    }
-  } else if (spec.kind === "peaks") {
-    const pts: number[] = [spec.x0, topY(spec.x0) + 20];
-    for (let x = spec.x0; x <= spec.x1; x += 30 + r() * 40) {
-      pts.push(x, topY(x) - 50 - r() * 160, x + 12 + r() * 10, topY(x) - 20 - r() * 40);
-    }
-    pts.push(spec.x1, topY(spec.x1) + 20);
-    props.poly(pts).fill({ color: dark });
-    for (let i = 0; i < (spec.x1 - spec.x0) / 120; i++) {
-      const x = spec.x0 + r() * (spec.x1 - spec.x0);
-      glows.push(addGlow(back, x, topY(x) - 30 - r() * 90, "#fb923c", 0.9 + r(), 0.4));
-    }
-  } else if (spec.kind === "crystal") {
-    for (let x = spec.x0 + 30; x < spec.x1; x += 40 + r() * 50) {
-      const h = 50 + r() * 140;
-      const w = 10 + r() * 14;
-      const b = topY(x) + 20;
-      const lean = (r() - 0.5) * 0.4;
-      props.poly([x - w, b, x - w * 0.6 + lean * h, b - h * 0.85, x + lean * h, b - h, x + w * 0.6 + lean * h, b - h * 0.85, x + w, b])
-        .fill({ color: mix(dark, col, 0.35), alpha: 0.95 });
-      props.poly([x, b, x + lean * h, b - h, x + w * 0.6 + lean * h, b - h * 0.85, x + w, b]).fill({ color: mix(dark, "#ffffff", 0.08), alpha: 0.6 });
-      if (r() < 0.6) glows.push(addGlow(back, x + lean * h, b - h, col, 0.8, 0.45));
-    }
-  } else if (spec.kind === "sky") {
-    const mx = spec.x0 + (spec.x1 - spec.x0) * (0.3 + r() * 0.4);
-    const my = spec.top - 210;
-    glows.push(addGlow(back, mx, my, "#e9d5ff", 6, 0.35));
-    props.circle(mx, my, 62).fill({ color: 0xf5f0ff, alpha: 0.9 });
-    props.circle(mx + 24, my - 12, 54).fill({ color: mix(spec.bg, col, 0.05) });
-    for (let i = 0; i < (spec.x1 - spec.x0) / 160; i++) {
-      const x = spec.x0 + r() * (spec.x1 - spec.x0);
-      const y = spec.top - 60 - r() * 120;
-      props.ellipse(x, y, 26 + r() * 20, 7).fill({ color: dark });
-      props.poly([x - 22, y, x, y + 26 + r() * 20, x + 22, y]).fill({ color: darker });
-    }
-  } else if (spec.kind === "shrine") {
-    for (let x = spec.x0 + 40; x < spec.x1 - 20; x += 90) {
-      const b = topY(x) + 16;
-      props.rect(x - 7, b - 90, 14, 90).fill({ color: dark });
-      props.rect(x - 12, b - 96, 24, 8).fill({ color: mix(dark, col, 0.3) });
-      glows.push(addGlow(back, x, b - 104, col, 0.7, 0.55));
-    }
-  }
-
-  // Rocky underside, deepest in the middle.
-  const under: number[] = [];
-  for (const x of xs) under.push(x, botY(x) - 10);
-  for (let i = xs.length - 1; i >= 0; i--) {
-    const x = xs[i];
-    const u = (x - spec.x0) / (spec.x1 - spec.x0);
-    const depth = (40 + r() * 70) * Math.sin(Math.PI * u) + (i % 2 ? r() * 60 : 0) * Math.sin(Math.PI * u);
-    under.push(x, botY(x) + depth);
-  }
+  const shore = (along: number, side: number, inset = 0) => {
+    const sample = terrainAt(spec.profile, along);
+    const distance = Math.min(along - start, end - along);
+    const cap = distance < 58 ? Math.sqrt(Math.max(0.015, 1 - (1 - distance / 58) ** 2)) : 1;
+    const wobble = Math.sin(along * 0.027 + spec.seed) * 7 + Math.sin(along * 0.063 + side) * 3;
+    const across = (sample.top + sample.bottom) / 2 + side * ((sample.bottom - sample.top) / 2 - inset + wobble) * cap;
+    return project(along, across);
+  };
+  const samples: number[] = [];
+  for (let x = start; x < end; x += 16) samples.push(x);
+  samples.push(end);
+  const outline = (inset = 0) => [
+    ...samples.flatMap((x) => { const p = shore(x, -1, inset); return [p.x, p.y]; }),
+    ...[...samples].reverse().flatMap((x) => { const p = shore(x, 1, inset); return [p.x, p.y]; }),
+  ];
+  const border = outline();
   const rock = new Graphics();
-  rock.poly(under).fill({ color: darker });
-  // Strata lines catch a little of the zone light.
-  for (let k = 1; k <= 3; k++) {
-    rock.moveTo(xs[0] + 30, botY(xs[0]) + k * 14);
-    for (const x of xs.slice(1, -1)) rock.lineTo(x, botY(x) + k * 14 + Math.sin(x * 0.03 + k) * 4);
-    rock.stroke({ width: 1.5, color: col, alpha: 0.08 });
-  }
-  if (spec.kind === "falls") {
-    for (let x = spec.x0 + 60; x < spec.x1 - 40; x += 70 + r() * 60) {
-      const y = botY(x) + 10;
-      const len = 120 + r() * 160;
-      rock.rect(x - 6, y, 12, len).fill({ color: 0x7dd3fc, alpha: 0.28 });
-      rock.rect(x - 2, y, 4, len).fill({ color: 0xe0f2fe, alpha: 0.45 });
-      glows.push(addGlow(back, x, y + len, "#7dd3fc", 1.4, 0.35));
-    }
-  }
+  rock.poly(border.map((v, i) => i % 2 ? v + 20 : v)).fill(stone);
+  rock.poly(border.map((v, i) => i % 2 ? v + 10 : v)).fill(mix(stone, ground, 0.3));
   back.addChild(rock);
 
-  // Surface plate the tiles sit on.
   const surface = new Graphics();
-  const plate: number[] = [];
-  for (const x of xs) plate.push(x, topY(x));
-  for (let i = xs.length - 1; i >= 0; i--) plate.push(xs[i], botY(xs[i]));
-  surface.poly(plate).fill({ color: mix(spec.bg, col, 0.14), alpha: 0.88 });
-  // Inner sheen and lit rim give the plate some depth.
-  const inner: number[] = [];
-  for (const x of xs) if (inset(x) < capR * 0.8) inner.push(x, topY(x) + 14 + inset(x) * 0.2);
-  for (let i = xs.length - 1; i >= 0; i--) if (inset(xs[i]) < capR * 0.8) inner.push(xs[i], botY(xs[i]) - 14 - inset(xs[i]) * 0.2);
-  if (inner.length > 6) surface.poly(inner).fill({ color: mix(spec.bg, col, 0.2), alpha: 0.5 });
-  surface.poly(plate).stroke({ width: 2, color: col, alpha: 0.35 });
-  surface.moveTo(xs[0], topY(xs[0]));
-  for (const x of xs.slice(1)) surface.lineTo(x, topY(x));
-  surface.stroke({ width: 3, color: mix(col, "#ffffff", 0.4), alpha: 0.45 });
+  surface.poly(border).fill({ color: ground, alpha: 0.98 });
+  surface.poly(border).stroke({ width: 2, color: rim, alpha: 0.24 });
+  surface.poly(outline(14)).fill({ color: mix(ground, "#56826c", 0.13), alpha: 0.4 });
   back.addChild(surface);
+  const xs = border.filter((_, i) => i % 2 === 0);
+  const ys = border.filter((_, i) => i % 2 === 1);
+  const texture = new TilingSprite({ texture: groundTexture(), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) });
+  texture.position.set(Math.min(...xs), Math.min(...ys));
+  const mask = new Graphics().poly(border).fill(0xffffff);
+  back.addChild(texture, mask);
+  texture.mask = mask;
 
-  // Hanging crystals beneath glow softly.
-  for (let i = 0; i < (spec.x1 - spec.x0) / 220; i++) {
-    const x = spec.x0 + 60 + r() * (spec.x1 - spec.x0 - 120);
-    const y = botY(x) + 30 + r() * 40;
-    const g = new Graphics();
-    g.poly([x - 7, y, x, y + 26 + r() * 20, x + 7, y]).fill({ color: mix(col, "#ffffff", 0.3), alpha: 0.75 });
-    front.addChild(g);
-    glows.push(addGlow(back, x, y + 16, col, 0.6, 0.5));
+  const details = new Graphics();
+  for (let along = start + 55; along < end - 40; along += 27 + r() * 28) {
+    const sample = terrainAt(spec.profile, along);
+    const across = sample.top + 28 + r() * Math.max(1, sample.bottom - sample.top - 56);
+    const p = project(along, across);
+    if (path.some((t) => Math.hypot(t.x - p.x, t.y - p.y) < 46)) continue;
+    const size = 3 + r() * 6;
+    details.ellipse(p.x, p.y, size * 1.6, size).fill({ color: mix(ground, r() > 0.3 ? "#83b9a2" : "#b8aecc", 0.24), alpha: 0.6 });
+    if (r() < 0.28) {
+      details.circle(p.x + 4, p.y - 3, 1.8).fill({ color: "#e2e4af", alpha: 0.65 });
+      details.circle(p.x - 3, p.y, 1.5).fill({ color: "#b0e3cb", alpha: 0.6 });
+    }
+  }
+  back.addChild(details);
+
+  // Broken shoreline shelves replace the repeated spikes and straight rails.
+  for (let along = start + 65; along < end - 35; along += 65 + r() * 70) {
+    const p = shore(along, r() > 0.5 ? -1 : 1, 3);
+    const w = 11 + r() * 17;
+    const h = 6 + r() * 8;
+    details.roundShape([
+      { x: p.x - w, y: p.y }, { x: p.x - w * 0.6, y: p.y - h },
+      { x: p.x + w * 0.55, y: p.y - h * 0.8 }, { x: p.x + w, y: p.y + h * 0.3 }, { x: p.x, y: p.y + h },
+    ], 4)
+      .fill(mix(ground, "#8198a4", 0.3));
+    if (r() < 0.35) details.ellipse(p.x - 2, p.y - h + 2, w * 0.6, 3).fill({ color: rim, alpha: 0.4 });
   }
 
+  if (spec.kind === "falls") {
+    for (let along = start + 140; along < end - 80; along += 240 + r() * 150) {
+      const p = shore(along, r() > 0.5 ? 1 : -1, -3);
+      const water = new Graphics();
+      water.moveTo(p.x - 9, p.y).bezierCurveTo(p.x - 12, p.y + 26, p.x + 7, p.y + 65, p.x + 3, p.y + 116)
+        .stroke({ width: 16, color: "#58b9c5", alpha: 0.22 });
+      water.moveTo(p.x - 5, p.y).bezierCurveTo(p.x - 7, p.y + 30, p.x + 6, p.y + 65, p.x + 2, p.y + 110)
+        .stroke({ width: 3, color: "#cff5e5", alpha: 0.5 });
+      back.addChildAt(water, back.getChildIndex(surface));
+      glows.push(addGlow(back, p.x, p.y + 112, "#a4e9df", 0.8, 0.18));
+    }
+  }
   return { back, front, glows };
 }
 

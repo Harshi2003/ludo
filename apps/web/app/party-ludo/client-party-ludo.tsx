@@ -1,3 +1,3 @@
-'use client';
-import dynamic from 'next/dynamic';
-export const ClientPartyLudo = dynamic(() => import('@/components/party-ludo/PartyLudo'), { ssr: false });
+"use client";
+import { ClientApp } from "../client-app";
+export function ClientPartyLudo() { return <ClientApp initialWorldId="party-ludo" />; }

@@ -50,6 +50,23 @@ export const sparkTexture = () =>
     ctx.fillRect(0, 0, 32, 32);
   });
 
+/** Subtle brush grain shared by the terrain; its alpha preserves biome colors. */
+export const groundTexture = () =>
+  canvasTexture("ground-grain", 512, 512, (ctx) => {
+    let seed = 8173;
+    const r = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < 160; i++) {
+      ctx.fillStyle = r() > 0.45 ? "rgba(173,211,180,.055)" : "rgba(5,18,29,.065)";
+      ctx.beginPath();
+      ctx.ellipse(r() * 512, r() * 512, 12 + r() * 45, 5 + r() * 20, r() * Math.PI, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (let i = 0; i < 1500; i++) {
+      ctx.fillStyle = r() > 0.5 ? "rgba(208,227,198,.075)" : "rgba(4,12,22,.09)";
+      ctx.fillRect(r() * 512, r() * 512, 0.7 + r() * 2.5, 0.7 + r() * 1.4);
+    }
+  });
+
 /** Sphere shading for token orbs: light top-left, dark rim. Tint with the guardian color. */
 export const orbTexture = () =>
   canvasTexture("orb", 128, 128, (ctx) => {

@@ -1,28 +1,18 @@
+import { ANIMATION_TIMING } from "@ludo/net";
 import { sfx } from '../sfx';
-// Party-only presentation fork. Motion, input, and token animation methods match the shared renderer; overview fits longer maps.
+// Party presentation stays isolated; camera and portrait gestures use the shared BoardCamera.
 import {
   character, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
 } from "@ludo/engine";
-import { Application, Assets, Container, Graphics, Rectangle, Sprite, Text, type FederatedPointerEvent, type Texture } from "pixi.js";
+import { Application, Assets, Container, Graphics, Sprite, Text, type Texture } from "pixi.js";
 import { ELEMENT_GLYPH, tileColor, tileGlyph, zoneColor } from "../visuals";
 import { addGlow } from "../board/decor";
 import { drawPartyTileArt, PARTY_TILE_COLORS } from "./tile-art";
 import { drawGlyph } from "../board/glyphs";
 import { boardExtents, COL_W, TILE_R, tilePos, wave } from "../board/layout";
 import { clamp, ease, glowTexture, hex, lerp, mix, orbTexture, skyTexture, sparkTexture, Tweener } from "../board/util";
-
-export interface Insets {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-}
-
-export interface CameraView {
-  x0: number;
-  x1: number;
-  worldWidth: number;
-}
+import { BoardCamera } from "../board/BoardCamera";
+export type { CameraView, Insets } from "../board/BoardCamera";
 
 interface TileView {
   tile: Tile;
@@ -57,11 +47,11 @@ interface Particle {
 
 const TOKEN_R = 19;
 
-export class PartyBoardRenderer {
+export class PartyBoardRenderer extends BoardCamera {
   readonly app = new Application();
   private tw!: Tweener;
   private pack: ThemePack;
-  private board: Board;
+  protected board: Board;
   private font: string;
 
   // Layers
@@ -69,7 +59,7 @@ export class PartyBoardRenderer {
   private painted = new Sprite();
   private stars = new Container();
   private nebula = new Container();
-  private world = new Container();
+  protected world = new Container();
   private islandsBack = new Container();
   private islandsFront = new Container();
   private edges = new Graphics();
@@ -82,32 +72,23 @@ export class PartyBoardRenderer {
   private ambient = new Container();
 
   private tiles: TileView[] = [];
-  private tokens: TokenView[] = [];
+  protected tokens: TokenView[] = [];
   private particles: Particle[] = [];
   private glows: Sprite[] = [];
   private starData: { s: Sprite; x: number; y: number; p: number; tw: number }[] = [];
+  private zoneLabels: Text[] = [];
   private crown?: Container;
   private castle = { x: 0, y: 0 };
 
-  // Camera
-  private cam = { x: 0, y: 0, zoom: 1 };
-  private target = { x: 0, y: 0, zoom: 1 };
-  private follow: TokenView | null = null;
-  private userControlUntil = 0;
-  private insets: Insets = { left: 0, right: 0, top: 0, bottom: 0 };
-  private extents!: ReturnType<typeof boardExtents>;
-  private shake = 0;
-  private pointers = new Map<number, { x: number; y: number }>();
-  private dragStart: { x: number; y: number; camX: number; camY: number; dist?: number; zoom?: number } | null = null;
-  private moved = 0;
+  protected extents!: ReturnType<typeof boardExtents>;
   private time = 0;
-  private activeSeat = -1;
+  protected activeSeat = -1;
   private destroyed = false;
 
-  onCamera?: (v: CameraView) => void;
   onPick?: (index: number) => void;
 
   private constructor(pack: ThemePack, board: Board, font: string) {
+    super();
     this.pack = pack;
     this.board = board;
     this.font = font;
@@ -220,6 +201,7 @@ export class PartyBoardRenderer {
       });
       label.anchor.set(0.5);
       label.alpha = 0.85;
+      this.zoneLabels.push(label);
       label.position.set(mid, extents.rawMinY - 195 + wave(z.from + (z.to - z.from) / 2));
       this.world.addChildAt(label, this.world.getChildIndex(this.islandsFront));
     }
@@ -387,139 +369,21 @@ export class PartyBoardRenderer {
 
   // ─── Camera ────────────────────────────────────────────────────────────
 
-  setInsets(i: Insets) {
-    this.insets = i;
-    if (performance.now() > this.userControlUntil) this.target.zoom = this.cam.zoom = this.defaultZoom();
-  }
-
-  private defaultZoom() {
-    const { width, height } = this.app.screen;
-    const h = height - this.insets.top - this.insets.bottom;
-    const span = this.extents.rawMaxY - this.extents.rawMinY + 420;
-    const w = width - this.insets.left - this.insets.right;
-    return clamp(Math.min(h / span, w / (11 * COL_W)), 0.38, 1.1);
-  }
-
-  resetCamera(tile: number, instant = false) {
-    const p = tilePos(this.board.tiles[tile]);
-    this.target = { x: p.x + COL_W * 2.5, y: (this.extents.rawMinY + this.extents.rawMaxY) / 2 - 30, zoom: this.defaultZoom() };
-    this.userControlUntil = 0;
-    if (instant) this.cam = { ...this.target };
-  }
-
-  overview() {
-    const { width } = this.app.screen;
-    const w = width - this.insets.left - this.insets.right;
-    this.target = {
-      x: this.extents.width / 2 - COL_W,
-      y: (this.extents.rawMinY + this.extents.rawMaxY) / 2 - 60,
-      zoom: clamp(w / (this.extents.width + 300), 0.03, 1),
-    };
-    this.follow = null;
-    this.userControlUntil = performance.now() + 60_000;
+  /** Rotate route coordinates while keeping Party illustrations and tokens upright. */
+  setPortrait(portrait: boolean) {
+    if (this.portrait === portrait) return;
+    super.setPortrait(portrait);
+    const rotation = portrait ? -Math.PI / 2 : 0;
+    for (const child of [...this.tilesLayer.children, ...this.tokensLayer.children, ...this.highlights.children, ...this.marks.children, ...this.zoneLabels]) {
+      child.rotation = rotation;
+    }
+    for (const child of this.fx.children) if (child instanceof Text) child.rotation = rotation;
   }
 
   followMovement(seat: number) {
     this.userControlUntil = 0;
     this.follow = this.tokens[seat] ?? null;
-    this.target.zoom = Math.min(1.6, Math.max(this.defaultZoom() * 1.35, 0.8));
-  }
-
-  focusSeat(seat: number) {
-    const tk = this.tokens[seat];
-    this.follow = tk;
-    this.userControlUntil = 0;
-    if (this.target.zoom < this.defaultZoom() * 0.8) this.target.zoom = this.defaultZoom();
-  }
-
-  panTo(worldX: number) {
-    this.target.x = worldX;
-    this.follow = null;
-    this.userControlUntil = performance.now() + 6000;
-  }
-
-  private applyCamera() {
-    const { width, height } = this.app.screen;
-    const cx = this.insets.left + (width - this.insets.left - this.insets.right) / 2;
-    const cy = this.insets.top + (height - this.insets.top - this.insets.bottom) / 2;
-    const sx = this.shake ? (Math.random() - 0.5) * this.shake : 0;
-    const sy = this.shake ? (Math.random() - 0.5) * this.shake : 0;
-    this.world.scale.set(this.cam.zoom);
-    this.world.position.set(cx - this.cam.x * this.cam.zoom + sx, cy - this.cam.y * this.cam.zoom + sy);
-  }
-
-  private bindInput() {
-    const stage = this.app.stage;
-    stage.eventMode = "static";
-    stage.hitArea = new Rectangle(-1e5, -1e5, 2e5, 2e5);
-    stage.on("pointerdown", (e: FederatedPointerEvent) => {
-      this.pointers.set(e.pointerId, { x: e.global.x, y: e.global.y });
-      this.moved = 0;
-      this.startGesture();
-    });
-    stage.on("globalpointermove", (e: FederatedPointerEvent) => {
-      if (!this.pointers.has(e.pointerId) || !this.dragStart) return;
-      const prev = this.pointers.get(e.pointerId)!;
-      this.moved += Math.hypot(e.global.x - prev.x, e.global.y - prev.y);
-      this.pointers.set(e.pointerId, { x: e.global.x, y: e.global.y });
-      const pts = [...this.pointers.values()];
-      const d = this.dragStart;
-      if (pts.length >= 2 && d.dist) {
-        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-        this.target.zoom = clamp((d.zoom ?? 1) * (dist / d.dist), 0.12, 2.2);
-        this.cam.zoom = this.target.zoom;
-      } else if (pts.length === 1) {
-        const p = pts[0];
-        this.target.x = d.camX - (p.x - d.x) / this.cam.zoom;
-        this.target.y = d.camY - (p.y - d.y) / this.cam.zoom;
-        this.cam.x = this.target.x;
-        this.cam.y = this.target.y;
-      }
-      if (this.moved > 6) {
-        this.follow = null;
-        this.userControlUntil = performance.now() + 5000;
-      }
-    });
-    const up = (e: FederatedPointerEvent) => {
-      this.pointers.delete(e.pointerId);
-      this.startGesture();
-    };
-    stage.on("pointerup", up);
-    stage.on("pointerupoutside", up);
-    this.app.canvas.addEventListener(
-      "wheel",
-      (e) => {
-        e.preventDefault();
-        const rect = this.app.canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const before = this.world.toLocal({ x: sx, y: sy });
-        const z = clamp(this.cam.zoom * Math.exp(-e.deltaY * 0.0015), 0.12, 2.2);
-        this.cam.zoom = this.target.zoom = z;
-        this.applyCamera();
-        const after = this.world.toLocal({ x: sx, y: sy });
-        this.cam.x += before.x - after.x;
-        this.cam.y += before.y - after.y;
-        this.target.x = this.cam.x;
-        this.target.y = this.cam.y;
-        this.follow = null;
-        this.userControlUntil = performance.now() + 5000;
-      },
-      { passive: false },
-    );
-  }
-
-  private startGesture() {
-    const pts = [...this.pointers.values()];
-    if (!pts.length) {
-      this.dragStart = null;
-      return;
-    }
-    this.dragStart = {
-      x: pts[0].x, y: pts[0].y, camX: this.cam.x, camY: this.cam.y,
-      dist: pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : undefined,
-      zoom: this.cam.zoom,
-    };
+    this.target.zoom = this.portrait ? this.defaultZoom() : Math.min(1.6, Math.max(this.defaultZoom() * 1.35, 0.8));
   }
 
   // ─── Frame loop ──────────────────────────────────────────────────────
@@ -537,25 +401,7 @@ export class PartyBoardRenderer {
       this.painted.position.set(width / 2 - drift, height / 2);
     }
 
-    // Camera follows the active token unless the player is steering.
-    if (this.follow && performance.now() > this.userControlUntil) {
-      const r = this.follow.root;
-      const half = (width - this.insets.left - this.insets.right) / 2 / this.cam.zoom;
-      const lead = Math.min(COL_W * 2.5, half * 0.45);
-      this.target.x = r.x + lead;
-      this.target.y = r.y;
-    }
-    const minX = -COL_W;
-    const maxX = this.extents.width;
-    this.target.x = clamp(this.target.x, minX, maxX);
-    this.target.y = clamp(this.target.y, this.extents.rawMinY - 400, this.extents.rawMaxY + 400);
-    const k = 1 - Math.pow(0.002, dt / 1000);
-    this.cam.x = lerp(this.cam.x, this.target.x, k);
-    this.cam.y = lerp(this.cam.y, this.target.y, k);
-    this.cam.zoom = lerp(this.cam.zoom, this.target.zoom, k);
-    this.shake *= Math.pow(0.0005, dt / 1000);
-    if (this.shake < 0.3) this.shake = 0;
-    this.applyCamera();
+    this.tickCamera(dt);
 
     // Parallax sky.
     for (const s of this.starData) {
@@ -647,7 +493,7 @@ export class PartyBoardRenderer {
     if (t.finish) return { x: this.castle.x, y: this.castle.y };
     const p = tilePos(t);
     const o = this.offsets(seat);
-    return { x: p.x + o.x, y: p.y + o.y };
+    return { x: p.x + (this.portrait ? o.y : o.x), y: p.y + (this.portrait ? -o.x : o.y) };
   }
 
   private layoutTokens(animate: boolean, except?: number) {
@@ -678,7 +524,7 @@ export class PartyBoardRenderer {
       const tk = this.tokens[p.seat];
       if (tk.tile !== p.tile) {
         tk.tile = p.tile;
-        if (animate) moves.push(this.flyToken(tk, p.tile, 450));
+        if (animate) moves.push(this.flyToken(tk, p.tile, 700));
       }
     }
     await Promise.all(moves);
@@ -715,6 +561,7 @@ export class PartyBoardRenderer {
         const a = (i * Math.PI) / 3;
         g.star(Math.cos(a) * TILE_R * 0.75, Math.sin(a) * TILE_R * 0.75, 3, 5, 2, a).fill(col);
       }
+      g.rotation = this.portrait ? -Math.PI / 2 : 0;
       g.position.set(pos.x, pos.y);
       this.marks.addChild(g);
     }
@@ -732,6 +579,7 @@ export class PartyBoardRenderer {
           }
         }
         g.roundRect(-TILE_R * 0.8, -TILE_R * 1.1, TILE_R * 1.6, TILE_R * 1.1, 6).stroke({ width: 2, color: 0x84cc16, alpha: 0.7 });
+        g.rotation = this.portrait ? -Math.PI / 2 : 0;
         g.position.set(pos.x, pos.y + 6);
         this.marks.addChild(g);
       }
@@ -749,6 +597,7 @@ export class PartyBoardRenderer {
       const t = this.board.tiles[m.to];
       const p = t.finish ? this.castle : tilePos(t);
       const c = new Container();
+      c.rotation = this.portrait ? -Math.PI / 2 : 0;
       c.position.set(p.x, p.y);
       const g = new Graphics();
       const ringColor = m.captures.length ? "#fb4f6d" : color;
@@ -831,11 +680,10 @@ export class PartyBoardRenderer {
         this.emit(at.x, at.y, tk.color, 46, 380, 0.9, 0.5);
         this.emit(at.x, at.y, "#ffffff", 20, 260, 0.6, 0.35);
         this.shockwave(at.x, at.y, tk.color, 140);
-        this.shake = 18;
         if (victim && e.to !== undefined) {
           victim.tile = e.to;
           await this.tw.wait(180);
-          await this.flyToken(victim, e.to, 700);
+          await this.flyToken(victim, e.to, 1000);
           this.layoutTokens(true);
         }
         return;
@@ -881,7 +729,6 @@ export class PartyBoardRenderer {
           await this.tw.wait(110);
         }
         this.emit(tk.root.x, tk.root.y, tk.color, big ? 70 : 30, big ? 480 : 260, 1, 0.5);
-        if (big) this.shake = 14;
         return this.tw.wait(big ? 300 : 200);
       }
 
@@ -906,7 +753,6 @@ export class PartyBoardRenderer {
         return;
 
       case "storm":
-        this.shake = 10;
         return this.tw.wait(300);
 
       case "win":
@@ -935,13 +781,14 @@ export class PartyBoardRenderer {
     const sy = tk.root.y;
     tk.tile = tileId;
     await this.tw.to(
-      190,
+      ANIMATION_TIMING.stepMs,
       (k) => {
-        tk.root.position.set(lerp(sx, p.x, k), lerp(sy, p.y, k) - Math.sin(k * Math.PI) * 26);
-        const squash = 1 + Math.sin(k * Math.PI) * 0.08;
+        const lift = Math.sin(k * Math.PI) * 10;
+        tk.root.position.set(lerp(sx, p.x, k) - (this.portrait ? lift : 0), lerp(sy, p.y, k) - (this.portrait ? 0 : lift));
+        const squash = 1 + Math.sin(k * Math.PI) * 0.04;
         tk.body.scale.set(2 - squash, squash);
       },
-      ease.linear,
+      ease.inOutCubic,
     );
     tk.body.scale.set(1);
     this.emit(p.x, p.y + 10, tk.color, 6, 70, 0.45, 0.25);
@@ -950,13 +797,13 @@ export class PartyBoardRenderer {
   private async teleport(tk: TokenView, tileId: number) {
     this.emit(tk.root.x, tk.root.y, tk.color, 30, 220, 0.7, 0.4);
     this.shockwave(tk.root.x, tk.root.y, "#b794ff", 90);
-    await this.tw.to(220, (k) => tk.root.scale.set(1 - k));
+    await this.tw.to(350, (k) => tk.root.scale.set(1 - k));
     tk.tile = tileId;
     const p = this.tokenTarget(tk.seat);
     tk.root.position.set(p.x, p.y);
     this.shockwave(p.x, p.y, "#b794ff", 90);
     this.emit(p.x, p.y, tk.color, 30, 220, 0.7, 0.4);
-    await this.tw.to(320, (k) => tk.root.scale.set(k), ease.outBack);
+    await this.tw.to(450, (k) => tk.root.scale.set(k), ease.outCubic);
     this.layoutTokens(true);
   }
 
@@ -965,13 +812,14 @@ export class PartyBoardRenderer {
     const sx = tk.root.x;
     const sy = tk.root.y;
     const p = this.tokenTarget(tk.seat);
-    const lift = Math.min(260, 60 + Math.abs(p.x - sx) * 0.3);
+    const lift = Math.min(80, 25 + Math.abs(p.x - sx) * 0.1);
     let last = 0;
     await this.tw.to(
       ms,
       (k) => {
-        tk.root.position.set(lerp(sx, p.x, k), lerp(sy, p.y, k) - Math.sin(k * Math.PI) * lift);
-        tk.root.rotation = Math.sin(k * Math.PI) * 0.6;
+        const arc = Math.sin(k * Math.PI) * lift;
+        tk.root.position.set(lerp(sx, p.x, k) - (this.portrait ? arc : 0), lerp(sy, p.y, k) - (this.portrait ? 0 : arc));
+        tk.root.rotation = (this.portrait ? -Math.PI / 2 : 0) + Math.sin(k * Math.PI) * 0.15;
         if (k - last > 0.05) {
           last = k;
           this.emit(tk.root.x, tk.root.y, tk.color, 2, 30, 0.5, 0.3);
@@ -979,7 +827,7 @@ export class PartyBoardRenderer {
       },
       ease.inOutCubic,
     );
-    tk.root.rotation = 0;
+    tk.root.rotation = this.portrait ? -Math.PI / 2 : 0;
   }
 
   private shockwave(x: number, y: number, color: string | number, radius: number) {
@@ -1002,23 +850,18 @@ export class PartyBoardRenderer {
       },
     });
     t.anchor.set(0.5);
+    t.rotation = this.portrait ? -Math.PI / 2 : 0;
     t.position.set(x, y);
     this.fx.addChild(t);
     void this.tw.to(1300, (k) => {
-      t.y = y - k * 40;
+      t.x = x - (this.portrait ? k * 40 : 0);
+      t.y = y - (this.portrait ? 0 : k * 40);
       t.alpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
     }).then(() => t.destroy());
   }
 
   setSpeed(s: number) {
     this.tw.speed = s;
-  }
-
-  /** Visible world range, for the minimap. */
-  cameraView(): CameraView {
-    const { width } = this.app.screen;
-    const half = width / 2 / this.cam.zoom;
-    return { x0: this.cam.x - half, x1: this.cam.x + half, worldWidth: this.extents.width };
   }
 
   /** Board image for the minimap: tile dots in world coordinates. */

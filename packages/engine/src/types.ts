@@ -118,7 +118,7 @@ export interface ZoneDef {
   id: string;
   name: string;
   type: ZoneType;
-  /** Columns at the 4-player reference size; scaled to hit the tile target. */
+  /** Relative section size; the generator allocates nodes to hit the tile target. */
   length: number;
   danger: 'low' | 'medium' | 'high';
   description: string;
@@ -156,11 +156,12 @@ export interface ThemePack {
 export interface Tile {
   id: number;
   col: number;
-  /** Layout units; y is centered on 0 and mirror-symmetric. */
+  /** Layout units; paths may wander asymmetrically around the board center. */
   x: number;
   y: number;
   /** Index into pack.zones; -1 for start lanes. */
   zone: number;
+  /** Position within this column's frontier, not a permanent player lane. */
   lane: number;
   next: number[];
   prev: number[];
@@ -175,6 +176,7 @@ export interface Tile {
 export interface Board {
   seed: number;
   players: number;
+  /** Maximum number of simultaneous paths after the starting area. */
   lanes: number;
   cols: number;
   tiles: Tile[];

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useId, useRef, useState } from 'react';
-import Link from 'next/link';
 import { PartyBoardRenderer as BoardRenderer } from '@/lib/party-ludo/PartyBoardRenderer';
+import { useGameViewport } from '@/lib/board/useGameViewport';
 import { PartyMinimap } from './PartyMinimap';
 import { ProfileAvatar } from './Profile';
 import type { PlayerProfile } from '@/lib/party-ludo/profile';
@@ -12,51 +12,11 @@ import { Emblem } from '../Emblem';
 import { partyPack } from '@/lib/party-ludo/data';
 import { LABELS, QUESTION_BY_ID, SPICE_LABELS, type SpiceLevel } from '@/lib/party-ludo/prompts';
 import { TASK_OPTIONS } from '@/lib/party-ludo/interactions';
-import { availableQuestions } from '@/lib/party-ludo/spice';
 import { DEFAULT_PARTY_CONFIG } from '@/lib/party-ludo/config';
 import { createPartyGame, partyRendererState, partyStep, voteLeaders, type PartyAction, type PartyState } from '@/lib/party-ludo/rules';
 
 const selectedButton = 'rounded-xl border border-accent bg-primary/30 px-4 py-3 text-left font-bold text-accent ring-2 ring-accent/50';
 const button = 'rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-left transition hover:border-primary hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-40';
-
-export default function PartyLudo() {
-  const [count, setCount] = useState(2);
-  const [maxSpiceLevel, setMaxSpiceLevel] = useState<SpiceLevel>(1);
-  const [game, setGame] = useState<{ players: number; seed: number; maxSpiceLevel: SpiceLevel } | null>(null);
-  if (game) return <Match key={`${game.seed}-${game.players}`} initial={game} onExit={() => setGame(null)}
-    onRematch={() => setGame({ ...game, seed: Math.floor(Math.random() * 2 ** 31) })} />;
-  return <main className="mx-auto max-w-5xl px-4 py-8 sm:px-8">
-    <Link href="/" className="text-sm text-muted">← Back to Magic Ludo</Link>
-    <section onClickCapture={e => { if ((e.target as HTMLElement).closest('button,a')) sfx.click(); }} className="glass mt-8 rounded-3xl p-6 sm:p-10">
-      <p className="text-xs font-semibold uppercase tracking-[.3em] text-accent">2–4 friends · Online or one device · Six rounds</p>
-      <h1 className="font-display title-gradient mt-3 text-4xl font-bold sm:text-6xl">Party Ludo — Sip &amp; Roll</h1>
-      <div className="mt-6 grid gap-3 sm:grid-cols-2"><Link href="/party-ludo/online?mode=host" className="rounded-xl bg-primary px-6 py-4 text-center font-bold">Host room</Link><Link href="/party-ludo/online?mode=join" className="rounded-xl border border-accent px-6 py-4 text-center font-bold text-accent">Join room</Link></div>
-      <p className="mt-5 text-lg">Roll the dice. Pick your path. Let the party decide what happens next.</p>
-      <ol className="mt-5 list-inside list-decimal space-y-2 text-sm text-muted">
-        <li>Take turns rolling and moving forward or backward.</li>
-        <li>Land on Drink, Lucky, Trap, Safe, or an interactive question tile.</li>
-        <li>Complete the task or draw a random penalty when you fail or skip. Review the result, then continue.</li>
-      </ol>
-      <p className="mt-4 text-sm text-muted">Reach the Party Finale first, or be closest after six rounds. Tied guests share the win. No combat, abilities, or extra rolls.</p>
-      <div className="mt-5 rounded-2xl border border-accent/20 bg-accent/5 p-4 text-sm">Drinking is always optional: choose water, a non-alcoholic drink, or no drink. Failed or skipped questions draw a board or sip penalty. Forced movement can activate one extra tile.</div>
-      <div className="mt-6 flex flex-wrap gap-3" role="group" aria-label="Number of players">{[2, 3, 4].map(n =>
-        <button key={n} aria-pressed={count === n} onClick={() => setCount(n)} className={`rounded-xl border px-4 py-3 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${count === n ? 'border-accent bg-primary/30 font-bold text-accent ring-2 ring-accent/50' : 'border-white/15 bg-white/5 hover:border-primary hover:bg-primary/20'}`}><span aria-hidden="true" className="mr-2 inline-block w-4">{count === n ? '✓' : ''}</span>{n} players</button>)}</div>
-      <p role="status" aria-live="polite" className="mt-3 text-sm text-accent">Selected: {count} players</p>
-      <fieldset className="mt-6">
-        <legend className="font-display text-lg text-gold">Question spice level</legend>
-        <p className="mt-2 text-sm text-muted">Choose the highest level your group is comfortable with. Lower levels are included.</p>
-        <div className="mt-3 flex flex-wrap gap-3" role="group" aria-label="Question spice level">{([1, 2, 3] as const).map(level => <button key={level} aria-pressed={maxSpiceLevel === level} onClick={() => setMaxSpiceLevel(level)} className={`rounded-xl border px-4 py-3 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${maxSpiceLevel === level ? 'border-accent bg-primary/30 font-bold text-accent ring-2 ring-accent/50' : 'border-white/15 bg-white/5 hover:border-primary hover:bg-primary/20'}`}>
-          <span aria-hidden="true" className="mr-2 inline-block w-4">{maxSpiceLevel === level ? '✓' : ''}</span>{SPICE_LABELS[level]}<span className="mt-1 block text-xs font-normal text-muted">{level === 1 ? 'Light and playful' : level === 2 ? 'More personal · includes Mild' : 'All levels · includes Mild & Medium'}</span>
-        </button>)}</div>
-        <p role="status" aria-live="polite" className="mt-3 text-sm text-muted"><span className="text-accent">Selected: {SPICE_LABELS[maxSpiceLevel]}</span> · {availableQuestions(maxSpiceLevel).length} questions available. {maxSpiceLevel === 3 && !availableQuestions(3).some(q => q.spiceLevel === 3) ? 'No level-3 questions yet; this uses Mild and Medium questions.' : 'Questions above your selected level will never be drawn.'}</p>
-      </fieldset>
-      <button className="mt-5 rounded-xl bg-primary px-8 py-4 font-bold" onClick={() => setGame({ players: count, seed: Math.floor(Math.random() * 2 ** 31), maxSpiceLevel })}>Play on one device</button>
-    </section>
-    <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{partyPack.tiles.map(tile => <section key={tile.id} className="glass rounded-2xl p-4">
-      <h2 className="font-display text-xl text-gold">{tile.name}</h2><p className="mt-2 text-sm text-muted">{tile.description}</p>
-    </section>)}</div>
-  </main>;
-}
 
 function Challenge({ state, busy, act, profiles }: { profiles?: PlayerProfile[]; state: PartyState; busy: boolean; act: (a: PartyAction) => Promise<void> }) {
   const dialog = useRef<HTMLDialogElement>(null), heading = useRef<HTMLHeadingElement>(null);
@@ -142,6 +102,7 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
   const actRef = useRef<(a: PartyAction) => Promise<void>>(async () => {});
   const stage = useRef<HTMLElement>(null);
   const [stopsOpen, setStopsOpen] = useState(false);
+  const { w, h, portrait, desktop } = useGameViewport();
   const [busy, setBusy] = useState(false), [ready, setReady] = useState(false), [boardError, setBoardError] = useState(false), [error, setError] = useState('');
   useEffect(() => {
     let dead = false; alive.current = true;
@@ -164,12 +125,11 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
   }, []);
   useEffect(() => {
     if (!ready) return;
-    const resize = () => renderer.current?.setInsets(window.innerWidth >= 1024
+    renderer.current?.setPortrait(portrait);
+    renderer.current?.setInsets(desktop
       ? { left: 300, right: 20, top: 76, bottom: 170 }
-      : { left: 12, right: 12, top: 150, bottom: 170 });
-    resize(); window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
-  }, [ready]);
+      : { left: 12, right: 12, top: 150, bottom: portrait ? 170 : 130 });
+  }, [ready, desktop, portrait, w, h]);
   const fullscreen = async () => {
     try { if (document.fullscreenElement) await document.exitFullscreen(); else await stage.current?.requestFullscreen(); }
     catch { setError('Full screen is unavailable in this browser.'); }
@@ -238,12 +198,12 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
   return <main ref={stage} onClickCapture={e => { if (!remote && (e.target as HTMLElement).closest('button,a,summary')) sfx.click(); }} className="fixed inset-0 isolate overflow-hidden bg-bg">
     <div ref={host} className="absolute inset-0" aria-label="Party Ludo board" />
     <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(ellipse at center, transparent 55%, rgba(3,2,10,.65))' }} />
-    <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start gap-2 p-2 sm:gap-3 sm:p-3">
+    <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start gap-2 p-2 sm:gap-3 sm:p-3" style={{ paddingTop: 'max(env(safe-area-inset-top), 8px)' }}>
       <div className="pointer-events-auto flex items-center gap-2">
         <button title="Leave game" aria-label="Leave game" disabled={busy} onClick={onExit} className="glass grid h-10 w-10 place-items-center rounded-xl text-lg">‹</button>
         <div className="glass hidden rounded-xl px-3 py-1.5 sm:block"><h1 className="font-display title-gradient text-sm font-bold">Party Ludo</h1><p className="text-[10px] uppercase tracking-[.2em] text-muted">Sip &amp; Roll</p></div>
       </div>
-      <div className="glass pointer-events-auto hidden h-12 min-w-0 flex-1 overflow-hidden rounded-xl px-2 py-1 md:block"><PartyMinimap pack={partyPack} state={partyRendererState(state)} renderer={renderer.current} /></div>
+      <div className={`glass pointer-events-auto hidden h-12 min-w-0 flex-1 overflow-hidden rounded-xl px-2 py-1 ${portrait ? '' : 'md:block'}`}><PartyMinimap pack={partyPack} state={partyRendererState(state)} renderer={renderer.current} /></div>
       <div className="pointer-events-auto ml-auto flex flex-wrap items-center justify-end gap-1.5">
         <div className="glass hidden rounded-xl px-3 py-1.5 text-center sm:block"><p className="text-[9px] uppercase tracking-[.2em] text-muted">Round</p><p className="font-display text-base font-bold">{state.round}/{state.config.rounds}</p></div>
         <button title="Board overview" aria-label="Board overview" disabled={!ready} className="glass grid h-10 w-10 place-items-center rounded-xl" onClick={() => renderer.current?.overview()}>⤢</button>
@@ -253,12 +213,12 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
         <button title="Party stops" aria-label="Party stops" aria-expanded={stopsOpen} className={`glass grid h-10 w-10 place-items-center rounded-xl ${stopsOpen ? 'border-accent text-accent' : ''}`} onClick={() => setStopsOpen(v => !v)}>☰</button>
       </div>
     </header>
-    <aside aria-label="Players" className="absolute inset-x-2 top-[72px] z-10 flex gap-2 overflow-x-auto pb-2 lg:bottom-[180px] lg:left-3 lg:right-auto lg:top-[86px] lg:w-[270px] lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden">
+    <aside aria-label="Players" className={`absolute z-10 flex gap-2 pb-2 ${desktop ? 'bottom-[180px] left-3 top-[86px] w-[270px] flex-col overflow-y-auto overflow-x-hidden' : 'inset-x-2 top-[72px] overflow-x-auto'}`}>
       {state.players.map((p, i) => {
         const color = partyPack.characters[i].color, active = state.turn === i && state.phase !== 'over';
         const total = state.board.distToFinish[state.board.starts[i]];
         const progress = Math.max(0, Math.min(100, (1 - state.board.distToFinish[p.tile] / total) * 100));
-        return <section key={p.character} aria-current={active ? 'step' : undefined} className={`glass relative flex min-w-[170px] shrink-0 items-center gap-3 rounded-2xl p-2.5 transition lg:min-w-0 ${active ? '' : 'opacity-85'}`} style={{ borderColor: active ? color : undefined, boxShadow: active ? `0 0 0 1px ${color}, 0 0 28px -4px ${color}` : undefined }}>
+        return <section key={p.character} aria-current={active ? 'step' : undefined} className={`glass relative flex shrink-0 items-center gap-3 rounded-2xl p-2.5 transition ${desktop ? 'min-w-0' : 'min-w-[170px]'} ${active ? '' : 'opacity-85'}`} style={{ borderColor: active ? color : undefined, boxShadow: active ? `0 0 0 1px ${color}, 0 0 28px -4px ${color}` : undefined }}>
           {remote?.feed.profiles?.[i] ? <ProfileAvatar profile={remote.feed.profiles[i]} name={p.name} size={44} /> : <Emblem c={partyPack.characters[i]} size={44} glow={active} />}
           <div className="min-w-0 flex-1"><p className="truncate font-display text-sm font-bold" style={{ color }}>{p.name}{remote?.feed.seat === i ? ' (you)' : ''}</p>
             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full transition-all" style={{ width: `${progress}%`, background: color }} /></div>
@@ -269,12 +229,12 @@ export function Match({ initial, onExit, onRematch, remote }: { initial: { playe
     </aside>
     {stopsOpen && <aside aria-label="Party stop descriptions" className="glass absolute right-3 top-[76px] z-30 max-h-[65vh] w-[min(320px,92vw)] overflow-y-auto rounded-2xl p-4"><div className="flex items-center justify-between"><h2 className="font-display text-lg text-gold">Party stops</h2><button aria-label="Close party stops" className="p-2" onClick={() => setStopsOpen(false)}>×</button></div><p className="mt-2 text-xs text-muted">Click a stop to see what happens.</p><div className="mt-3 space-y-2 text-sm">{partyPack.tiles.map(tile => <details key={tile.id} className="rounded-xl border border-white/10 bg-white/5"><summary className="cursor-pointer rounded-xl px-3 py-2">{tile.name}</summary><p className="px-3 pb-3 leading-relaxed text-muted">{tile.description}</p></details>)}</div></aside>}
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 p-2 sm:p-4" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 8px)' }}>
-      <section className="pointer-events-auto min-w-0 max-w-[calc(100%-116px)] sm:max-w-[calc(100%-160px)] lg:ml-[286px]" aria-busy={busy}>
+      <section className={`pointer-events-auto min-w-0 ${portrait ? 'max-w-[calc(100%-100px)]' : 'max-w-[calc(100%-116px)] sm:max-w-[calc(100%-160px)]'} ${desktop ? 'ml-[286px]' : ''}`} aria-busy={busy}>
         <div className="glass mb-2 w-fit max-w-full rounded-xl px-3 py-2 text-xs sm:text-sm"><span className="font-display font-bold" style={{ color: activeColor }}>{state.players[state.turn].name}</span> <span className="text-muted">· {SPICE_LABELS[state.maxSpiceLevel]}{remote ? ` · Room ${remote.feed.code}` : ''}</span><p role="status" aria-live="polite" className="mt-1">{busy ? 'Rolling and moving…' : remote && !remote.connected ? 'Reconnecting…' : !allowed ? 'Waiting for the other players…' : state.message}</p>{(error || remote?.error) && <p role="alert" className="mt-2 text-red-300">{error || remote?.error}</p>}</div>
         {state.phase === 'move' && <details className="glass mb-2 rounded-xl p-3"><summary className="cursor-pointer text-sm text-accent">Choose a highlighted tile · Show destinations</summary><div className="mt-2 grid max-h-[25vh] gap-2 overflow-y-auto sm:grid-cols-2">{state.moves.map((m, i) => <button key={i} disabled={busy || !allowed} className={button} onClick={() => void act({ type: 'move', index: i })}>{m.dir === 'fwd' ? 'Forward' : 'Backward'} · {partyPack.tiles.find(t => t.id === state.board.tiles[m.to].type)!.name} · Tile {m.to}</button>)}</div></details>}
         {boardError && <p className="glass rounded-xl p-2 text-xs text-muted">Board unavailable. Use the destination list to move.</p>}
       </section>
-      <button disabled={!canRoll} onClick={() => void act({ type: 'roll' })} aria-label="Roll the dice" className="glass pointer-events-auto relative grid h-[104px] w-[104px] shrink-0 place-items-center rounded-[28px] disabled:cursor-default sm:h-[132px] sm:w-[132px]" style={{ borderColor: canRoll ? activeColor : undefined, boxShadow: canRoll ? `0 0 0 2px ${activeColor}, 0 0 40px -4px ${activeColor}` : undefined }}><Dice ref={dice} size={52} /><span className="absolute bottom-2 text-[10px] font-bold uppercase tracking-[.25em]" style={{ color: canRoll ? activeColor : 'var(--muted)' }}>{canRoll ? 'Roll' : state.roll ?? '·'}</span></button>
+      <button disabled={!canRoll} onClick={() => void act({ type: 'roll' })} aria-label="Roll the dice" className={`glass pointer-events-auto relative grid shrink-0 place-items-center rounded-[28px] disabled:cursor-default ${portrait ? 'h-[88px] w-[88px]' : 'h-[104px] w-[104px] sm:h-[132px] sm:w-[132px]'}`} style={{ borderColor: canRoll ? activeColor : undefined, boxShadow: canRoll ? `0 0 0 2px ${activeColor}, 0 0 40px -4px ${activeColor}` : undefined }}><Dice ref={dice} size={52} /><span className="absolute bottom-2 text-[10px] font-bold uppercase tracking-[.25em]" style={{ color: canRoll ? activeColor : 'var(--muted)' }}>{canRoll ? 'Roll' : state.roll ?? '·'}</span></button>
     </div>
     {!ready && !boardError && <div className="pointer-events-none absolute inset-0 grid place-items-center"><p className="font-display animate-pulse text-lg tracking-[.3em] text-muted">GETTING THE PARTY READY…</p></div>}
     {state.phase === 'over' && <section role="dialog" aria-modal="true" aria-label="Party results" className="glass absolute left-1/2 top-1/2 z-40 max-h-[80vh] w-[min(90vw,540px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-3xl bg-bg p-8 text-center"><h2 className="font-display text-3xl text-gold">{state.winners.map(i => state.players[i].name).join(' & ')} {state.winners.length > 1 ? 'share the win!' : 'wins!'}</h2><p className="mt-4 text-muted">{state.completed} cards completed · {state.skipped} cards skipped</p><div className="mt-5 flex flex-wrap justify-center gap-3"><button className={button} disabled={!!remote && !remote.feed.host} onClick={onRematch}>{remote ? 'Return to lobby' : 'Play again'}</button><button className={button} onClick={onExit}>Leave game</button></div></section>}

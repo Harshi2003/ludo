@@ -3,7 +3,7 @@ import { character, mean, type BalanceWarning, type BotStyle, type PlayerCount, 
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getWorld, selectedWorldId } from "@/lib/worlds";
+import { getWorld, selectedWorldId, isPartyWorld } from "@/lib/worlds";
 import { applyTuning, defaultTuning, isDefault, loadTuning, saveTuning, type Tuning } from "@/lib/tuning";
 import { Emblem } from "../Emblem";
 import { BarRows, ChartCard, characterColor, Histogram, StatTile, VIZ } from "./charts";
@@ -48,7 +48,7 @@ function Slider({ label, value, min, max, step = 1, suffix = "", onChange, chang
 }
 
 export default function Lab() {
-  const [pack] = useState<ThemePack>(() => getWorld(selectedWorldId()).pack);
+  const [pack] = useState<ThemePack>(() => { const world = getWorld(selectedWorldId()).pack; return isPartyWorld(world) ? getWorld(null).pack : world; });
   const base = useMemo(() => defaultTuning(pack), [pack]);
   const [tuning, setTuning] = useState<Tuning>(base);
   const [players, setPlayers] = useState<PlayerCount>(4);

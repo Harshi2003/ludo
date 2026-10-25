@@ -1,5 +1,6 @@
 import type { ThemePack } from "@ludo/engine";
 import { magicPack, validatePack } from "@ludo/themepack";
+import { partyPack } from "./party-ludo/data";
 
 export interface WorldEntry {
   pack: ThemePack;
@@ -10,7 +11,9 @@ export interface WorldEntry {
 
 const KEY = "ludo:worlds";
 const SELECTED = "ludo:world";
-const BUILT_IN: WorldEntry[] = [{ pack: magicPack, createdAt: 0, builtIn: true }];
+const BUILT_IN: WorldEntry[] = [magicPack, partyPack].map(pack => ({ pack, createdAt: 0, builtIn: true }));
+
+export const isPartyWorld = (pack: ThemePack) => pack.id === partyPack.id;
 
 function read(): WorldEntry[] {
   try {
@@ -30,7 +33,7 @@ function write(list: WorldEntry[]) {
 }
 
 export function listWorlds(): WorldEntry[] {
-  return [...BUILT_IN, ...read().sort((a, b) => b.createdAt - a.createdAt)];
+  return [...BUILT_IN, ...read().filter(w => !BUILT_IN.some(b => b.pack.id === w.pack.id)).sort((a, b) => b.createdAt - a.createdAt)];
 }
 
 export function getWorld(id: string | null | undefined): WorldEntry {

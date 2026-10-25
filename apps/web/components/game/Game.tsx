@@ -2,9 +2,11 @@
 import {
   botAction, character, createGame, step, tileDef, type Action, type GameEvent, type GameState, type ThemePack,
 } from "@ludo/engine";
+import { ANIMATION_TIMING } from "@ludo/net";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BoardRenderer } from "@/lib/board/BoardRenderer";
+import { useGameViewport } from "@/lib/board/useGameViewport";
 import { isMuted, setMuted, sfx } from "@/lib/sfx";
 import { splitTitle } from "@/lib/worlds";
 import { Dice, type DiceHandle } from "../Dice";
@@ -33,17 +35,6 @@ export interface GameConfig {
 
 const TOAST_KINDS = new Set<GameEvent["kind"]>(["capture", "blocked_capture", "tile", "trap", "ability", "ultimate", "passive", "skip", "storm", "no_moves", "effect", "win"]);
 
-function useViewport() {
-  const [vp, setVp] = useState({ w: 1280, h: 800 });
-  useEffect(() => {
-    const f = () => setVp({ w: window.innerWidth, h: window.innerHeight });
-    f();
-    window.addEventListener("resize", f);
-    return () => window.removeEventListener("resize", f);
-  }, []);
-  return vp;
-}
-
 export default function Game({ pack, config, onExit, onRematch, online }: {
   pack: ThemePack; config?: GameConfig; onExit: () => void; onRematch?: () => void; online?: OnlineBinding;
 }) {
@@ -69,9 +60,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   const dice = useRef<DiceHandle>(null);
   const host = useRef<HTMLDivElement>(null);
   const toastId = useRef(0);
-  const { w, h } = useViewport();
-  const desktop = w >= 1024;
-  const portrait = h > w && w < 700;
+  const { w, h, portrait, desktop } = useGameViewport();
 
   // Mount the Pixi board once.
   useEffect(() => {
@@ -95,8 +84,9 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
   }, [pack]);
 
   useEffect(() => {
-    renderer?.setInsets(desktop ? { left: 300, right: 20, top: 70, bottom: 120 } : { left: 0, right: 0, top: 66, bottom: 96 });
-  }, [renderer, desktop, w, h]);
+    renderer?.setPortrait(portrait);
+    renderer?.setInsets(desktop ? { left: 300, right: 20, top: 70, bottom: 120 } : { left: 0, right: 0, top: portrait ? 126 : 66, bottom: portrait ? 170 : 96 });
+  }, [renderer, desktop, portrait, w, h]);
 
   useEffect(() => renderer?.setSpeed(fast ? 2 : 1), [renderer, fast]);
 
@@ -127,7 +117,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       if (e.kind === "tile" && e.tile !== undefined) sfx.tile(tileDef(pack, s, e.tile)?.category !== "harmful");
       if (e.kind === "win") sfx.win();
       if (TOAST_KINDS.has(e.kind) && !(e.kind === "effect" && !e.targets?.length && !e.msg.includes("extra"))) pushToast(e);
-      if (e.kind === "move" && e.path) e.path.forEach((_, i) => setTimeout(() => sfx.hop(i), (i * 190) / (fast ? 2 : 1)));
+      if (e.kind === "move" && e.path) e.path.forEach((_, i) => setTimeout(() => sfx.hop(i), (i * ANIMATION_TIMING.stepMs) / (fast ? 2 : 1)));
       await r.playEvent(e, s);
     }
     await r.sync(s);
@@ -207,7 +197,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
     if (online || !renderer || busy || view.phase === "over") return;
     const p = view.players[view.turn];
     if (!p.bot) return;
-    const t = setTimeout(() => act(botAction(pack, stateRef.current)), fast ? 250 : 650);
+    const t = setTimeout(() => act(botAction(pack, stateRef.current)), fast ? 250 : 1000);
     return () => clearTimeout(t);
   }, [online, renderer, busy, view, act, pack, fast]);
 
@@ -247,7 +237,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
       <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(ellipse at center, transparent 55%, rgba(3,2,10,.65))" }} />
 
       {/* Top bar */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start gap-2 p-2 sm:gap-3 sm:p-3" style={{ paddingTop: "max(env(safe-area-inset-top), 8px)" }}>
+      <div className={`pointer-events-none absolute inset-x-0 top-0 flex items-start gap-2 p-2 sm:gap-3 sm:p-3 ${portrait ? "flex-wrap" : ""}`} style={{ paddingTop: "max(env(safe-area-inset-top), 8px)" }}>
         <div className="pointer-events-auto flex items-center gap-2">
           <button onClick={onExit} className="glass grid h-10 w-10 place-items-center rounded-xl text-lg" aria-label="Leave game">‹</button>
           {desktop && (
@@ -257,16 +247,16 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
             </div>
           )}
         </div>
-        {!desktop && <div className="pointer-events-auto"><PlayerCards pack={pack} state={view} compact label={online?.label} /></div>}
-        <div className="glass pointer-events-auto hidden h-12 min-w-0 flex-1 overflow-hidden rounded-xl px-2 py-1 md:block">
+        {!desktop && <div className={`pointer-events-auto ${portrait ? "order-last flex w-full justify-center" : ""}`}><PlayerCards pack={pack} state={view} compact label={online?.label} /></div>}
+        <div className={`glass pointer-events-auto hidden h-12 min-w-0 flex-1 overflow-hidden rounded-xl px-2 py-1 ${portrait ? "" : "md:block"}`}>
           <Minimap pack={pack} state={view} renderer={renderer} />
         </div>
         <div className="pointer-events-auto ml-auto flex items-center gap-1.5">
-          <div className="glass hidden rounded-xl px-3 py-1.5 text-center sm:block">
+          <div className={`glass hidden rounded-xl px-3 py-1.5 text-center ${portrait ? "" : "sm:block"}`}>
             <div className="text-[9px] uppercase tracking-[.2em] text-muted">Round</div>
             <div className="font-display text-base font-bold leading-tight">{view.round}</div>
           </div>
-          <div className={`glass hidden rounded-xl px-3 py-1.5 text-center sm:block ${view.storm ? "border-amber-300/60" : ""}`}
+          <div className={`glass hidden rounded-xl px-3 py-1.5 text-center ${portrait ? "" : "sm:block"} ${view.storm ? "border-amber-300/60" : ""}`}
             title={`${pack.rules.stormName}: backward moves end at round ${stormAt}`}>
             <div className="text-[9px] uppercase tracking-[.2em] text-muted">Storm</div>
             <div className={`text-sm font-bold leading-tight ${view.storm ? "text-amber-300" : ""}`}>{view.storm ? "⛈ Now" : `in ${stormAt - view.round}`}</div>
@@ -285,7 +275,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
         </div>
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 top-[70px] z-20 sm:top-[84px]">
+      <div className={`pointer-events-none absolute inset-x-0 z-20 ${portrait ? "top-[126px]" : "top-[70px] sm:top-[84px]"}`}>
         <Toasts pack={pack} state={view} toasts={toasts} />
       </div>
 
@@ -295,7 +285,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
         <div className="pointer-events-auto">
           <AnimatePresence mode="wait">
             <motion.div key={`${view.turn}-${view.phase}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              className="glass mb-2 w-fit rounded-xl px-3 py-1.5 text-xs sm:text-sm">
+              className={`glass mb-2 w-fit rounded-xl px-3 py-1.5 text-xs sm:text-sm ${portrait ? "max-w-[220px]" : ""}`}>
               <span className="font-display font-bold" style={{ color: cc.color }}>{cc.name}</span>{" "}
               <span className="text-white/80">
                 {view.phase === "over" ? "has won!" : !humanTurn ? waitingOn : view.phase === "roll" ? "— cast an ability or roll" : `— choose a glowing tile (${view.roll})`}
@@ -311,7 +301,7 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
           whileTap={canRoll ? { scale: 0.92 } : undefined}
           className="glass pointer-events-auto relative grid place-items-center rounded-[28px] disabled:cursor-default"
           style={{
-            width: desktop ? 132 : 104, height: desktop ? 132 : 104,
+            width: desktop ? 132 : portrait ? 88 : 104, height: desktop ? 132 : portrait ? 88 : 104, flexShrink: 0,
             borderColor: canRoll ? cc.color : undefined,
             boxShadow: canRoll ? `0 0 0 2px ${cc.color}, 0 0 40px -4px ${cc.color}` : undefined,
           }}
@@ -338,7 +328,6 @@ export default function Game({ pack, config, onExit, onRematch, online }: {
           <div className="font-display animate-pulse text-lg tracking-[.3em] text-muted">FORGING THE REALM…</div>
         </div>
       )}
-      {portrait && <RotateHint />}
     </div>
   );
 }
@@ -349,18 +338,5 @@ function IconBtn({ children, label, onClick, active }: { children: React.ReactNo
       className={`glass grid h-10 w-10 place-items-center rounded-xl text-base transition-colors hover:bg-white/10 ${active ? "border-accent/70 text-accent" : ""}`}>
       {children}
     </button>
-  );
-}
-
-function RotateHint() {
-  const [hide, setHide] = useState(false);
-  if (hide) return null;
-  return (
-    <div className="absolute inset-x-3 bottom-36 z-30 flex justify-center">
-      <button onClick={() => setHide(true)} className="glass flex items-center gap-3 rounded-2xl px-4 py-3 text-sm">
-        <span className="text-2xl">⟲</span>
-        <span className="text-left">Turn your phone sideways for the full battlefield<span className="block text-xs text-muted">Tap to dismiss</span></span>
-      </button>
-    </div>
   );
 }

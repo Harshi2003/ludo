@@ -1,12 +1,19 @@
 import type { Action, Board, GameEvent, GameState, ThemePack } from '@ludo/engine';
+import type { PlayerProfile } from './profile';
+export * from './profile';
 
 export type PlayerCount = 2 | 3 | 4;
+
+/** Shared with the server so bot turns leave time for the client's animations. */
+export const ANIMATION_TIMING = { stepMs: 360, rollMs: 1200 } as const;
 
 export interface MemberView {
   id: string;
   name: string;
   connected: boolean;
   character: string | null;
+  ready: boolean;
+  profile: PlayerProfile;
 }
 
 export interface SeatView {
@@ -22,6 +29,7 @@ export interface RoomView {
   status: 'lobby' | 'playing' | 'over';
   hostId: string;
   playerCount: PlayerCount;
+  allowBots: boolean;
   members: MemberView[];
   seats: SeatView[] | null;
   worldName: string;
@@ -30,17 +38,20 @@ export interface RoomView {
 /** Game state on the wire: events travel separately, the board only once. */
 export type WireState = Omit<GameState, 'events' | 'board'>;
 
-export type ClientMessage =
-  | { t: 'create'; name: string; pack: ThemePack }
-  | { t: 'join'; code: string; name: string; token?: string }
+export type ClientMessage = { requestId?: number } & (
+  | { t: 'create'; name: string; pack: ThemePack; profile?: PlayerProfile }
+  | { t: 'join'; code: string; name: string; token?: string; profile?: PlayerProfile }
+  | { t: 'ready'; ready: boolean }
+  | { t: 'bots'; enabled: boolean }
   | { t: 'pick'; character: string | null }
   | { t: 'players'; count: PlayerCount }
   | { t: 'start' }
   | { t: 'action'; action: Action }
   | { t: 'rematch' }
-  | { t: 'leave' };
+  | { t: 'leave' });
 
 export type ServerMessage =
+  | { t: 'ack'; requestId: number; error?: string }
   | { t: 'welcome'; you: { id: string; token: string }; room: RoomView; pack: ThemePack; board?: Board; state?: WireState }
   | { t: 'room'; room: RoomView }
   | { t: 'start'; room: RoomView; board: Board; state: WireState; events: GameEvent[] }

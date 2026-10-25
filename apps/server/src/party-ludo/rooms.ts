@@ -1,4 +1,5 @@
 import { createInviteCode } from './invite';
+import { ANIMATION_TIMING, validatePlayerName } from '@ludo/net';
 import { validateSpiceLevel } from '../../../web/lib/party-ludo/spice';
 import { validateProfile, type PlayerProfile } from '../../../web/lib/party-ludo/profile';
 import { randomBytes, randomInt } from 'node:crypto';
@@ -36,8 +37,7 @@ export class PartyRooms {
       if (msg.t === 'create' || msg.t === 'join') {
         if (this.where.has(peer)) throw new Error('Leave your current room first.');
         const name = typeof msg.name === 'string' ? msg.name.trim() : '';
-        const validName = /^[a-zA-Z0-9 _.-]{1,18}$/.test(name);
-        if ((msg.t === 'create' || !msg.token) && !validName) throw new Error('Enter a player name of 1–18 characters using English letters, numbers, spaces, periods, hyphens, or underscores.');
+        if (msg.t === 'create' || !msg.token) validatePlayerName(name);
         const profile = validateProfile(msg.profile);
         let r: Room;
         if (msg.t === 'create') {
@@ -53,7 +53,8 @@ export class PartyRooms {
         if (seat < 0) {
           if (r.state) throw new Error('This game has started. Rejoin with your original browser.');
           if (r.members.length >= 4) throw new Error('This room is full.');
-          if (!validName) throw new Error('Enter your player name before joining.');
+          validatePlayerName(name);
+          if (r.members.some(m => m.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error('That name is already taken in this room. Choose another name.');
           seat = r.members.length; r.members.push({ id: randomBytes(8).toString('hex'), ready: false, token: randomBytes(24).toString('hex'), name, profile, peer });
         } else r.members[seat].peer = peer;
         if (!r.state) r.members.forEach(m => m.ready = false);
@@ -117,7 +118,7 @@ export class PartyRooms {
         if (r.state.result?.privateVote) { r.reveals.clear(); r.checked.clear(); }
       }
       r.revision++;
-      const ms = a.type === 'roll' ? 1300 : r.state.motions.reduce((sum, m) => sum + m.path.length * 260 + 800, 0);
+      const ms = a.type === 'roll' ? ANIMATION_TIMING.rollMs + 100 : r.state.motions.reduce((sum, m) => sum + m.path.length * ANIMATION_TIMING.stepMs + 800, 0);
       r.until = Date.now() + ms;
       this.publish(r, a.type);
       if (ms) setTimeout(() => this.publish(r), ms + 30).unref();

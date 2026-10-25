@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ANIMATION_TIMING } from '@ludo/net';
 import { PartyRooms } from '../src/party-ludo/rooms';
 import { drawCard } from '../../web/lib/party-ludo/rules';
 import { actingSeat } from '../../web/lib/party-ludo/online';
@@ -14,6 +15,33 @@ function setup(count: number) {
   return { manager, peers, room, action };
 }
 describe('Independent Party online rooms', () => {
+  it('keeps online actions locked until the shared dice and movement playback finishes', () => {
+    vi.useFakeTimers();
+    try {
+      const { manager, room, peers, action } = setup(2);
+      action(0, { type: 'roll' });
+      vi.advanceTimersByTime(ANIMATION_TIMING.rollMs - 1);
+      const rolledRevision = room.revision;
+      manager.handle(peers[0], { t: 'action', revision: room.revision, action: { type: 'move', index: 0 } });
+      expect(room.revision).toBe(rolledRevision);
+      expect(peers[0].messages.at(-1).message).toContain('animation');
+      vi.advanceTimersByTime(131);
+      manager.handle(peers[0], { t: 'action', revision: room.revision, action: { type: 'move', index: 0 } });
+      expect(room.revision).toBe(rolledRevision + 1);
+      const duration = room.state!.motions.reduce((sum, motion) => sum + motion.path.length * ANIMATION_TIMING.stepMs + 800, 0);
+      expect(duration).toBeGreaterThan(0);
+      vi.advanceTimersByTime(duration - 1);
+      const movedRevision = room.revision;
+      manager.handle(peers[0], { t: 'action', revision: room.revision, action: { type: 'next' } });
+      expect(room.revision).toBe(movedRevision);
+      expect(peers[0].messages.at(-1).message).toContain('animation');
+      vi.advanceTimersByTime(31);
+      for (const peer of peers) expect(peer.messages.at(-1).feed.locked).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
   it.each([2, 3, 4])('finishes a synchronized %i-player session with server-controlled turns', count => {
     const { room, peers, action } = setup(count);
     for (let steps = 0; room.state!.phase !== 'over'; steps++) {

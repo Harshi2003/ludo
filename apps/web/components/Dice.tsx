@@ -1,5 +1,6 @@
 "use client";
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
+import { ANIMATION_TIMING } from "@ludo/net";
 
 export interface DiceHandle {
   roll(value: number): Promise<void>;
@@ -27,22 +28,23 @@ export function Dice({ ref, size = 64 }: { ref?: Ref<DiceHandle>; size?: number 
     roll(value) {
       const f = FACES.find((f) => f.v === value)!;
       const cur = rotRef.current;
-      // Always spin forward a couple of turns, landing exactly on the face.
+      const shortest = (angle: number) => ((angle + 180) % 360 + 360) % 360 - 180;
+      // One gentle turn instead of several rapid spins on both axes.
       const next = {
-        x: cur.x - (((cur.x % 360) + 360) % 360) + 720 + f.rx,
-        y: cur.y - (((cur.y % 360) + 360) % 360) + 1080 + f.ry,
+        x: cur.x + 360 + shortest(f.rx - cur.x),
+        y: cur.y + shortest(f.ry - cur.y),
       };
       rotRef.current = next;
       setRolling(true);
       setRot(next);
-      return new Promise((r) => setTimeout(() => { setRolling(false); r(); }, 950));
+      return new Promise((r) => setTimeout(() => { setRolling(false); r(); }, ANIMATION_TIMING.rollMs));
     },
   }));
 
   const h = size / 2;
   return (
     <div className="dice-scene" style={{ width: size, height: size }}>
-      <div className="dice-cube" style={{ width: size, height: size, transform: `rotateX(${rot.x}deg) rotateY(${rot.y}deg)` }}>
+      <div className="dice-cube" style={{ width: size, height: size, transitionDuration: `${ANIMATION_TIMING.rollMs}ms`, transform: `rotateX(${rot.x}deg) rotateY(${rot.y}deg)` }}>
         {FACES.map((f) => (
           <div key={f.v} className="dice-face" style={{ transform: `${f.t} translateZ(${h}px)` }}>
             {Array.from({ length: 9 }, (_, i) => (

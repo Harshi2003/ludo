@@ -1,5 +1,30 @@
 # Party Ludo — mixed tiles and bounded penalties
 
+## Shared friends-first lobby
+
+Party is a built-in world in the main Worlds shelf. All themes use `/online` with
+`components/lobby` for entry, profiles, invites, rosters, readiness and starting.
+`npm run server` serves both classic and Party rooms, using `/party` for the Party
+WebSocket endpoint. `server:party` is an optional legacy deployment only.
+The older implementation notes below describe the original separate setup.
+
+## Shared integration
+
+Party Ludo now uses the shared `../board/BoardCamera.ts` and
+`../board/useGameViewport.ts` alongside Magic/Pirate. Portrait screens project the
+route vertically, keep illustrations and tokens upright, and use the same camera
+bounds, gentle follow, zoom and touch controls. Party-specific lounge artwork,
+route generation, challenges, penalties, profiles and online protocol stay in
+their existing modules. Movement playback is synchronized with the current shared
+renderer, including `ANIMATION_TIMING`, with Party hop sound retained.
+The Party server uses the same timing constants to keep turns locked during playback.
+
+Run `npm run server` from the root for online play in every world. Party uses
+the same host and port with `/party`; `NEXT_PUBLIC_PARTY_WS_URL` is an optional
+override for separate deployments.
+The sections below record the original Party implementation and its verification;
+references to untouched shared files describe that original isolated change.
+
 ## Launch
 
 Run `npm run web` from the project root, then open http://localhost:3000/party-ludo. Refresh an existing Party tab and start a new game after updating code. No JSON import, API key, new dependency, or online service is needed. Play locally with 2–4 humans on one device; refreshing discards the match.

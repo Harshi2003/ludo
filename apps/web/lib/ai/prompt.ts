@@ -14,7 +14,7 @@ export const FORGE_SYSTEM = `You are the world designer for AI Ludo, a racing-an
 - Each character has a passive, an active ability (used before rolling, then cools down) and an ultimate (charges each turn, faster on captures, fastest when captured).
 
 ## Zone types
-- "crossing": lanes cross on shared tiles. "merge": every lane funnels onto a shared run (battle zone). "branch": each lane forks into high/low routes. "lane": parallel lanes linked by ladder rungs. "funnel": the single final approach — exactly one, always the LAST zone.
+- The graph is asymmetric and varies between one, two and three paths. "crossing": more sideways connections and junctions. "merge": paths squeeze into a shared run (battle zone). "branch": more independent side forks. "lane": longer wandering trails with occasional connections. "funnel": paths converge into the single final approach — exactly one, always the LAST zone.
 - 5 zones is ideal (4–6 allowed). length 4–14 (columns at 4-player size). Include at least one merge.
 - decor (scenery for the zone's island): "forest" | "falls" | "peaks" | "sky" | "crystal" | "shrine". Pick what fits each zone's mood.
 
