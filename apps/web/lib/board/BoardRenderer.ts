@@ -1,25 +1,15 @@
 import {
   character, tileDef, type Board, type GameEvent, type GameState, type MoveOption, type ThemePack, type Tile,
 } from "@ludo/engine";
-import { Application, Assets, Container, Graphics, Rectangle, Sprite, Text, type FederatedPointerEvent, type Texture } from "pixi.js";
+import { ANIMATION_TIMING } from "@ludo/net";
+import { Application, Assets, Container, Graphics, Sprite, Text, type Texture } from "pixi.js";
 import { ELEMENT_GLYPH, sceneOf, tileColor, tileGlyph, zoneColor } from "../visuals";
 import { addGlow, buildIsland, CANDY, candyCane, decorFor, swirl } from "./decor";
 import { drawGlyph } from "./glyphs";
-import { boardExtents, COL_W, TILE_R, tilePos, wave } from "./layout";
+import { boardExtents, COL_W, TILE_R, tilePos, terrainAt, terrainProfile, type TerrainSlice } from "./layout";
 import { clamp, ease, glowTexture, hex, lerp, mix, orbTexture, skyTexture, sparkTexture, Tweener } from "./util";
-
-export interface Insets {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-}
-
-export interface CameraView {
-  x0: number;
-  x1: number;
-  worldWidth: number;
-}
+import { BoardCamera } from "./BoardCamera";
+export type { CameraView, Insets } from "./BoardCamera";
 
 interface TileView {
   tile: Tile;
@@ -54,11 +44,11 @@ interface Particle {
 
 const TOKEN_R = 19;
 
-export class BoardRenderer {
+export class BoardRenderer extends BoardCamera {
   readonly app = new Application();
   private tw!: Tweener;
   private pack: ThemePack;
-  private board: Board;
+  protected board: Board;
   private font: string;
 
   // Layers
@@ -66,7 +56,10 @@ export class BoardRenderer {
   private painted = new Sprite();
   private stars = new Container();
   private nebula = new Container();
-  private world = new Container();
+  protected world = new Container();
+  private zoneLabels: Text[] = [];
+  private zonePlaques: Graphics[] = [];
+  private islandProfiles: TerrainSlice[][] = [];
   private islandsBack = new Container();
   private islandsFront = new Container();
   private edges = new Graphics();
@@ -79,32 +72,24 @@ export class BoardRenderer {
   private ambient = new Container();
 
   private tiles: TileView[] = [];
-  private tokens: TokenView[] = [];
+  protected tokens: TokenView[] = [];
   private particles: Particle[] = [];
   private glows: Sprite[] = [];
   private starData: { s: Sprite; x: number; y: number; p: number; tw: number }[] = [];
   private crown?: Container;
+  private castleArt?: Container;
+  private castleStairs?: Graphics;
   private castle = { x: 0, y: 0 };
 
-  // Camera
-  private cam = { x: 0, y: 0, zoom: 1 };
-  private target = { x: 0, y: 0, zoom: 1 };
-  private follow: TokenView | null = null;
-  private userControlUntil = 0;
-  private insets: Insets = { left: 0, right: 0, top: 0, bottom: 0 };
-  private extents!: ReturnType<typeof boardExtents>;
-  private shake = 0;
-  private pointers = new Map<number, { x: number; y: number }>();
-  private dragStart: { x: number; y: number; camX: number; camY: number; dist?: number; zoom?: number } | null = null;
-  private moved = 0;
+  protected extents!: ReturnType<typeof boardExtents>;
   private time = 0;
-  private activeSeat = -1;
+  protected activeSeat = -1;
   private destroyed = false;
 
-  onCamera?: (v: CameraView) => void;
   onPick?: (index: number) => void;
 
   private constructor(pack: ThemePack, board: Board, font: string) {
+    super();
     this.pack = pack;
     this.board = board;
     this.font = font;
@@ -158,7 +143,7 @@ export class BoardRenderer {
     this.extents = boardExtents(board);
 
     const scene = sceneOf(pack);
-    const top = `#${mix(pack.art.palette.bg, pack.art.palette.primary, 0.22).toString(16).padStart(6, "0")}`;
+    const top = `#${mix(pack.art.palette.bg, pack.art.palette.primary, 0.08).toString(16).padStart(6, "0")}`;
     // City: night overhead fading to a sunset over the bay. Candy: berry dusk with a pink glow below.
     this.sky.texture = scene === "city" ? skyTexture("#0a1426", "#1d2140", "#7a2e2a")
       : scene === "candy" ? skyTexture("#3a1248", pack.art.palette.bg, "#5a1d4f")
@@ -171,18 +156,18 @@ export class BoardRenderer {
       const s = new Sprite(glowTexture());
       s.anchor.set(0.5);
       s.tint = nebulaColors[i % nebulaColors.length];
-      s.alpha = 0.12 + Math.random() * 0.1;
+      s.alpha = 0.04 + Math.random() * 0.035;
       s.scale.set(6 + Math.random() * 8, 4 + Math.random() * 5);
       s.blendMode = "add";
       this.nebula.addChild(s);
       this.starData.push({ s, x: Math.random(), y: Math.random(), p: 0.015, tw: 0 });
     }
     // Fewer, dimmer stars over a lit city; candy-coloured sprinkles over the Candy Kingdom.
-    for (let i = 0; i < (scene === "city" ? 90 : 220); i++) {
+    for (let i = 0; i < (scene === "city" ? 60 : 105); i++) {
       const s = new Sprite(sparkTexture());
       s.anchor.set(0.5);
-      const big = Math.random() < 0.08;
-      s.scale.set(big ? 0.35 + Math.random() * 0.25 : 0.1 + Math.random() * 0.14);
+      const big = Math.random() < 0.035;
+      s.scale.set(big ? 0.16 + Math.random() * 0.14 : 0.07 + Math.random() * 0.08);
       s.tint = scene === "candy" ? CANDY[i % CANDY.length] : Math.random() < 0.3 ? 0xd8c7ff : 0xffffff;
       if (scene === "city") s.alpha = 0.6;
       this.stars.addChild(s);
@@ -195,8 +180,8 @@ export class BoardRenderer {
     );
 
     this.buildIslands();
-    this.buildEdges();
     this.buildCastle();
+    this.buildEdges();
     for (const t of board.tiles) if (!t.finish) this.tiles.push(this.buildTile(t, state));
     this.buildZoneLabels();
     state.players.forEach((p) => this.tokens.push(this.buildToken(p.seat, state)));
@@ -205,23 +190,34 @@ export class BoardRenderer {
   }
 
   private buildIslands() {
-    const { pack, board, extents } = this;
+    const { pack, board } = this;
+    this.islandsBack.removeChildren().forEach((c) => c.destroy({ children: true }));
+    this.islandsFront.removeChildren().forEach((c) => c.destroy({ children: true }));
+    this.glows = [];
+    this.islandProfiles = [];
     const bg = pack.art.palette.bg;
     const spans = [{ zone: -1, from: 0, to: board.zoneCols[0].from - 1 }, ...board.zoneCols];
     spans.forEach((z, i) => {
       const zoneDef = pack.zones[z.zone];
       const isLast = i === spans.length - 1;
+      const profile = terrainProfile(board, z.from, z.to, this.portrait, isLast);
+      this.islandProfiles.push(profile);
+      const path = board.tiles.filter((t) => t.col >= z.from - 2 && t.col <= z.to + 2).map(tilePos);
+      if (isLast) {
+        const finish = tilePos(board.tiles[board.finish]);
+        for (let x = 90; x <= 500; x += 70) {
+          for (const y of [-75, 0, 75]) path.push({ x: finish.x + x, y: finish.y + y });
+        }
+      }
       const island = buildIsland({
-        x0: (z.from - 0.42) * COL_W,
-        x1: (z.to + (isLast ? 2.2 : 0.42)) * COL_W,
-        top: extents.rawMinY - 64,
-        bottom: extents.rawMaxY + 64,
+        profile,
+        path,
         color: z.zone < 0 ? pack.art.palette.primary : zoneColor(pack, z.zone),
         bg,
         kind: z.zone < 0 ? "shrine" : decorFor(zoneDef?.id, zoneDef?.type, zoneDef?.decor),
         seed: board.seed * 31 + i * 977,
         scene: sceneOf(pack),
-      });
+      }, this.portrait);
       this.islandsBack.addChild(island.back);
       this.islandsFront.addChild(island.front);
       this.glows.push(...island.glows);
@@ -229,11 +225,10 @@ export class BoardRenderer {
   }
 
   private buildZoneLabels() {
-    const { pack, board, extents } = this;
+    const { pack, board } = this;
     for (const z of board.zoneCols) {
       const def = pack.zones[z.zone];
       if (!def) continue;
-      const mid = ((z.from + z.to) / 2) * COL_W;
       const label = new Text({
         text: def.name.toUpperCase(),
         style: {
@@ -242,8 +237,12 @@ export class BoardRenderer {
         },
       });
       label.anchor.set(0.5);
-      label.alpha = 0.85;
-      label.position.set(mid, extents.rawMinY - 195 + wave(z.from + (z.to - z.from) / 2));
+      label.alpha = 0.95;
+      const plaque = new Graphics();
+      this.zonePlaques.push(plaque);
+      this.zoneLabels.push(label);
+      this.layoutZoneLabel(label, z.from, z.to);
+      this.world.addChildAt(plaque, this.world.getChildIndex(this.islandsFront));
       this.world.addChildAt(label, this.world.getChildIndex(this.islandsFront));
       if (def.slope) {
         const up = def.slope === "up";
@@ -252,9 +251,39 @@ export class BoardRenderer {
           style: { fontFamily: this.font, fontSize: 15, fontWeight: "700", letterSpacing: 3, fill: up ? "#fca5a5" : "#86efac", stroke: { color: pack.art.palette.bg, width: 5 } },
         });
         tag.anchor.set(0.5);
-        tag.position.set(mid, label.y + 30);
+        // Sits just under the zone name, whichever way the board runs.
+        tag.rotation = label.rotation;
+        tag.position.set(this.portrait ? label.x + 30 : label.x, this.portrait ? label.y : label.y + 30);
         this.world.addChildAt(tag, this.world.getChildIndex(this.islandsFront));
       }
+    }
+  }
+
+  private layoutZoneLabel(label: Text, from: number, to: number) {
+    label.rotation = this.portrait ? -Math.PI / 2 : 0;
+    label.style.fontSize = 20;
+    label.style.letterSpacing = 3;
+    label.scale.set(1);
+    const index = this.board.zoneCols.findIndex((z) => z.from === from);
+    const profile = this.islandProfiles[index + 1];
+    if (this.portrait) {
+      const col = from - 0.5;
+      const entry = terrainAt(profile, from * COL_W);
+      label.position.set(col * COL_W, (entry.top + entry.bottom) / 2);
+      label.scale.set(Math.min(1, (entry.bottom - entry.top - 24) / label.width));
+    } else {
+      const col = (from + to) / 2;
+      const middle = terrainAt(profile, col * COL_W);
+      label.position.set(col * COL_W, middle.top - 85);
+    }
+    const plaque = this.zonePlaques[this.zoneLabels.indexOf(label)];
+    if (plaque) {
+      const width = label.width + 30;
+      const height = label.height + 16;
+      plaque.clear().roundRect(-width / 2, -height / 2, width, height, 13).fill({ color: 0x0b1924, alpha: 0.9 });
+      plaque.roundRect(-width / 2, -height / 2, width, height, 13).stroke({ width: 1, color: 0xb2cfbf, alpha: 0.26 });
+      plaque.position.copyFrom(label.position);
+      plaque.rotation = label.rotation;
     }
   }
 
@@ -266,12 +295,12 @@ export class BoardRenderer {
         const a = tilePos(t);
         for (const n of t.next) {
           const u = board.tiles[n];
-          const b = tilePos(u);
+          const b = u.finish ? this.castle : tilePos(u);
           const dx = (b.x - a.x) * 0.5;
           const color = t.zone >= 0 ? zoneColor(pack, t.zone) : pack.art.palette.primary;
           g.moveTo(a.x, a.y).bezierCurveTo(a.x + dx, a.y, b.x - dx, b.y, b.x, b.y);
-          if (pass === 0) g.stroke({ width: 16, color, alpha: 0.1, cap: "round" });
-          else g.stroke({ width: 3, color: mix(color, "#ffffff", 0.4), alpha: 0.45, cap: "round" });
+          if (pass === 0) g.stroke({ width: 34, color: mix(color, "#718f7b", 0.65), alpha: 0.2, cap: "round" });
+          else g.stroke({ width: 3, color: mix(color, "#c1d0b5", 0.6), alpha: 0.5, cap: "round" });
         }
       }
     }
@@ -360,21 +389,36 @@ export class BoardRenderer {
     this.castle = { x, y };
     const root = new Container();
     root.position.set(x, y);
+    const plaza = new Graphics();
+    plaza.ellipse(0, 0, 53, 34).fill(0x213e48).stroke({ width: 2, color: 0xc5ddcf, alpha: 0.5 });
+    plaza.ellipse(0, 0, 39, 24).stroke({ width: 1.5, color: 0xd8c8f3, alpha: 0.35 });
+    root.addChild(plaza);
+    const stairs = new Graphics();
+    for (let step = 0; step < 12; step++) {
+      const y = 40 + step * 14;
+      stairs.roundRect(-30, y, 60, 8, 3).fill({ color: 0xa2bbc2, alpha: 0.2 + step * 0.015 });
+    }
+    stairs.visible = false;
+    root.addChild(stairs);
+    this.castleStairs = stairs;
+    const art = new Container();
+    root.addChild(art);
+    this.castleArt = art;
     const lastZone = this.board.zoneCols[this.board.zoneCols.length - 1]?.zone ?? 0;
     const col = zoneColor(this.pack, lastZone);
-    addGlow(root, 0, -60, col, 6, 0.4);
-    addGlow(root, 0, -40, "#ffffff", 2.5, 0.25);
+    addGlow(art, 0, -60, col, 3.5, 0.2);
+    addGlow(art, 0, -40, "#ffffff", 1.6, 0.12);
     const g = new Graphics();
     g.ellipse(0, 40, 150, 34).fill({ color: mix(col, "#0b0820", 0.65) });
     g.ellipse(0, 36, 150, 30).stroke({ width: 3, color: col, alpha: 0.5 });
     const scene = sceneOf(this.pack);
-    if (scene === "city") this.drawBridgeTower(root, g);
+    if (scene === "city") this.drawBridgeTower(art, g);
     else if (scene === "candy") this.drawSugarPalace(root, g, col);
     else this.drawSpires(g, col);
     // Gate arch where tokens arrive.
     g.roundRect(-26, -30, 52, 66, 26).fill(mix(col, "#0b0820", 0.75));
     g.roundRect(-26, -30, 52, 66, 26).stroke({ width: 3, color: 0xfff7d6, alpha: 0.8 });
-    root.addChild(g);
+    art.addChild(g);
 
     const crown = new Container();
     const cg = new Graphics();
@@ -382,16 +426,16 @@ export class BoardRenderer {
     addGlow(crown, 0, 0, "#fcd34d", 1.6, 0.6);
     crown.addChild(cg);
     crown.position.set(0, scene === "city" ? -300 : -260);
-    root.addChild(crown);
+    art.addChild(crown);
     this.crown = crown;
 
     const label = new Text({
       text: this.pack.world.finish.toUpperCase(),
-      style: { fontFamily: this.font, fontSize: 20, fontWeight: "900", letterSpacing: 5, fill: 0xfff1fb },
+      style: { fontFamily: this.font, fontSize: 26, fontWeight: "900", letterSpacing: 3, fill: 0xfff1fb },
     });
     label.anchor.set(0.5);
     label.position.set(0, 96);
-    root.addChild(label);
+    art.addChild(label);
     this.tilesLayer.addChild(root);
   }
 
@@ -505,133 +549,26 @@ export class BoardRenderer {
 
   // ─── Camera ────────────────────────────────────────────────────────────
 
-  setInsets(i: Insets) {
-    this.insets = i;
-    if (performance.now() > this.userControlUntil) this.target.zoom = this.cam.zoom = this.defaultZoom();
-  }
-
-  private defaultZoom() {
-    const { width, height } = this.app.screen;
-    const h = height - this.insets.top - this.insets.bottom;
-    const span = this.extents.rawMaxY - this.extents.rawMinY + 420;
-    const w = width - this.insets.left - this.insets.right;
-    return clamp(Math.min(h / span, w / (11 * COL_W)), 0.38, 1.1);
-  }
-
-  resetCamera(tile: number, instant = false) {
-    const p = tilePos(this.board.tiles[tile]);
-    this.target = { x: p.x + COL_W * 2.5, y: (this.extents.rawMinY + this.extents.rawMaxY) / 2 - 30, zoom: this.defaultZoom() };
-    this.userControlUntil = 0;
-    if (instant) this.cam = { ...this.target };
-  }
-
-  overview() {
-    const { width } = this.app.screen;
-    const w = width - this.insets.left - this.insets.right;
-    this.target = {
-      x: this.extents.width / 2 - COL_W,
-      y: (this.extents.rawMinY + this.extents.rawMaxY) / 2 - 60,
-      zoom: clamp(w / (this.extents.width + 300), 0.12, 1),
-    };
-    this.follow = null;
-    this.userControlUntil = performance.now() + 60_000;
-  }
-
-  focusSeat(seat: number) {
-    const tk = this.tokens[seat];
-    this.follow = tk;
-    this.userControlUntil = 0;
-    if (this.target.zoom < this.defaultZoom() * 0.8) this.target.zoom = this.defaultZoom();
-  }
-
-  panTo(worldX: number) {
-    this.target.x = worldX;
-    this.follow = null;
-    this.userControlUntil = performance.now() + 6000;
-  }
-
-  private applyCamera() {
-    const { width, height } = this.app.screen;
-    const cx = this.insets.left + (width - this.insets.left - this.insets.right) / 2;
-    const cy = this.insets.top + (height - this.insets.top - this.insets.bottom) / 2;
-    const sx = this.shake ? (Math.random() - 0.5) * this.shake : 0;
-    const sy = this.shake ? (Math.random() - 0.5) * this.shake : 0;
-    this.world.scale.set(this.cam.zoom);
-    this.world.position.set(cx - this.cam.x * this.cam.zoom + sx, cy - this.cam.y * this.cam.zoom + sy);
-  }
-
-  private bindInput() {
-    const stage = this.app.stage;
-    stage.eventMode = "static";
-    stage.hitArea = new Rectangle(-1e5, -1e5, 2e5, 2e5);
-    stage.on("pointerdown", (e: FederatedPointerEvent) => {
-      this.pointers.set(e.pointerId, { x: e.global.x, y: e.global.y });
-      this.moved = 0;
-      this.startGesture();
-    });
-    stage.on("globalpointermove", (e: FederatedPointerEvent) => {
-      if (!this.pointers.has(e.pointerId) || !this.dragStart) return;
-      const prev = this.pointers.get(e.pointerId)!;
-      this.moved += Math.hypot(e.global.x - prev.x, e.global.y - prev.y);
-      this.pointers.set(e.pointerId, { x: e.global.x, y: e.global.y });
-      const pts = [...this.pointers.values()];
-      const d = this.dragStart;
-      if (pts.length >= 2 && d.dist) {
-        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-        this.target.zoom = clamp((d.zoom ?? 1) * (dist / d.dist), 0.12, 2.2);
-        this.cam.zoom = this.target.zoom;
-      } else if (pts.length === 1) {
-        const p = pts[0];
-        this.target.x = d.camX - (p.x - d.x) / this.cam.zoom;
-        this.target.y = d.camY - (p.y - d.y) / this.cam.zoom;
-        this.cam.x = this.target.x;
-        this.cam.y = this.target.y;
-      }
-      if (this.moved > 6) {
-        this.follow = null;
-        this.userControlUntil = performance.now() + 5000;
-      }
-    });
-    const up = (e: FederatedPointerEvent) => {
-      this.pointers.delete(e.pointerId);
-      this.startGesture();
-    };
-    stage.on("pointerup", up);
-    stage.on("pointerupoutside", up);
-    this.app.canvas.addEventListener(
-      "wheel",
-      (e) => {
-        e.preventDefault();
-        const rect = this.app.canvas.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const before = this.world.toLocal({ x: sx, y: sy });
-        const z = clamp(this.cam.zoom * Math.exp(-e.deltaY * 0.0015), 0.12, 2.2);
-        this.cam.zoom = this.target.zoom = z;
-        this.applyCamera();
-        const after = this.world.toLocal({ x: sx, y: sy });
-        this.cam.x += before.x - after.x;
-        this.cam.y += before.y - after.y;
-        this.target.x = this.cam.x;
-        this.target.y = this.cam.y;
-        this.follow = null;
-        this.userControlUntil = performance.now() + 5000;
-      },
-      { passive: false },
-    );
-  }
-
-  private startGesture() {
-    const pts = [...this.pointers.values()];
-    if (!pts.length) {
-      this.dragStart = null;
-      return;
+  /** Project the route vertically and rebuild the scenery for the new orientation. */
+  setPortrait(portrait: boolean) {
+    if (this.portrait === portrait) return;
+    super.setPortrait(portrait);
+    const rotation = portrait ? Math.PI / 2 : 0;
+    this.world.rotation = rotation;
+    this.buildIslands();
+    this.castleArt?.position.set(0, portrait ? 220 : 0);
+    this.castleArt?.scale.set(portrait ? 0.7 : 1);
+    if (this.castleStairs) this.castleStairs.visible = portrait;
+    for (const child of [...this.tilesLayer.children, ...this.tokensLayer.children, ...this.highlights.children, ...this.marks.children, ...this.zoneLabels]) {
+      child.rotation = -rotation;
     }
-    this.dragStart = {
-      x: pts[0].x, y: pts[0].y, camX: this.cam.x, camY: this.cam.y,
-      dist: pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : undefined,
-      zoom: this.cam.zoom,
-    };
+    for (const child of this.fx.children) if (child instanceof Text) child.rotation = -rotation;
+    this.board.zoneCols.filter((z) => this.pack.zones[z.zone]).forEach((z, i) => {
+      this.layoutZoneLabel(this.zoneLabels[i], z.from, z.to);
+    });
+    this.pointers.clear();
+    this.dragStart = null;
+    this.resetCamera(this.tokens[this.activeSeat]?.tile ?? this.board.starts[0], true);
   }
 
   // ─── Frame loop ──────────────────────────────────────────────────────
@@ -649,30 +586,13 @@ export class BoardRenderer {
       this.painted.position.set(width / 2 - drift, height / 2);
     }
 
-    // Camera follows the active token unless the player is steering.
-    if (this.follow && performance.now() > this.userControlUntil) {
-      const r = this.follow.root;
-      const half = (width - this.insets.left - this.insets.right) / 2 / this.cam.zoom;
-      const lead = Math.min(COL_W * 2.5, half * 0.45);
-      this.target.x = r.x + lead;
-    }
-    const minX = -COL_W;
-    const maxX = this.extents.width;
-    this.target.x = clamp(this.target.x, minX, maxX);
-    this.target.y = clamp(this.target.y, this.extents.rawMinY - 400, this.extents.rawMaxY + 400);
-    const k = 1 - Math.pow(0.002, dt / 1000);
-    this.cam.x = lerp(this.cam.x, this.target.x, k);
-    this.cam.y = lerp(this.cam.y, this.target.y, k);
-    this.cam.zoom = lerp(this.cam.zoom, this.target.zoom, k);
-    this.shake *= Math.pow(0.0005, dt / 1000);
-    if (this.shake < 0.3) this.shake = 0;
-    this.applyCamera();
+    this.tickCamera(dt);
 
     // Parallax sky.
     for (const s of this.starData) {
       const px = (((s.x * width - this.cam.x * s.p * this.cam.zoom) % width) + width) % width;
       s.s.position.set(px, s.y * height);
-      if (s.tw) s.s.alpha = 0.45 + 0.55 * Math.abs(Math.sin(this.time * 0.8 + s.tw));
+      if (s.tw) s.s.alpha = 0.2 + 0.4 * Math.abs(Math.sin(this.time * 0.8 + s.tw));
     }
 
     for (const t of this.tiles) {
@@ -692,7 +612,7 @@ export class BoardRenderer {
       }
     }
     for (const h of this.highlights.children) {
-      const s = 1 + 0.06 * Math.sin(this.time * 6);
+      const s = 1 + 0.025 * Math.sin(this.time * 2);
       h.scale.set(s);
     }
 
@@ -742,15 +662,14 @@ export class BoardRenderer {
     this.ambientClock += dt;
     if (this.ambientClock < 90 || this.ambient.children.length > 140) return;
     this.ambientClock = 0;
-    const { width } = this.app.screen;
-    const half = width / 2 / this.cam.zoom;
+    const half = this.viewportSize().along / 2 / this.cam.zoom;
     const x = this.cam.x + (Math.random() * 2 - 1) * half;
     const col = Math.round(x / COL_W);
     const zc = this.board.zoneCols.find((z) => col >= z.from && col <= z.to);
     const zone = zc ? this.pack.zones[zc.zone] : undefined;
     const kind = decorFor(zone?.id, zone?.type, zone?.decor);
     const color = zc ? zoneColor(this.pack, zc.zone) : this.pack.art.palette.accent;
-    const y = this.extents.rawMinY - 80 + Math.random() * (this.extents.rawMaxY - this.extents.rawMinY + 220) + wave(col);
+    const y = this.extents.rawMinY - 60 + Math.random() * (this.extents.rawMaxY - this.extents.rawMinY + 120);
     const s = new Sprite(sparkTexture());
     s.anchor.set(0.5);
     s.blendMode = "add";
@@ -762,8 +681,9 @@ export class BoardRenderer {
     this.ambient.addChild(s);
     const rise = kind === "peaks" ? -40 : kind === "falls" ? 25 : fog ? -3 : -12;
     const life = (fog ? 6 : 3) + Math.random() * 3;
-    // Fog drifts in off the bay (left to right) instead of rising.
-    this.particles.push({ s, vx: fog ? 18 + Math.random() * 22 : (Math.random() - 0.5) * 30, vy: rise, life, max: life, gravity: 0, fade: fog ? 0.16 : 0.8 });
+    // Fog drifts in off the bay (along the board) instead of rising.
+    const drift = fog ? 18 + Math.random() * 22 : (Math.random() - 0.5) * 30;
+    this.particles.push({ s, vx: this.portrait ? rise : drift, vy: this.portrait ? drift : rise, life, max: life, gravity: 0, fade: fog ? 0.16 : 0.8 });
   }
 
   // ─── Tokens & state sync ────────────────────────────────────────────────
@@ -785,7 +705,7 @@ export class BoardRenderer {
     if (t.finish) return { x: this.castle.x, y: this.castle.y };
     const p = tilePos(t);
     const o = this.offsets(seat);
-    return { x: p.x + o.x, y: p.y + o.y };
+    return { x: p.x + (this.portrait ? o.y : o.x), y: p.y + (this.portrait ? -o.x : o.y) };
   }
 
   private layoutTokens(animate: boolean, except?: number) {
@@ -816,7 +736,7 @@ export class BoardRenderer {
       const tk = this.tokens[p.seat];
       if (tk.tile !== p.tile) {
         tk.tile = p.tile;
-        if (animate) moves.push(this.flyToken(tk, p.tile, 450));
+        if (animate) moves.push(this.flyToken(tk, p.tile, 700));
       }
     }
     await Promise.all(moves);
@@ -871,6 +791,7 @@ export class BoardRenderer {
         }
         g.roundRect(-TILE_R * 0.8, -TILE_R * 1.1, TILE_R * 1.6, TILE_R * 1.1, 6).stroke({ width: 2, color: 0x84cc16, alpha: 0.7 });
         g.position.set(pos.x, pos.y + 6);
+        g.rotation = this.portrait ? -Math.PI / 2 : 0;
         this.marks.addChild(g);
       }
     }
@@ -888,6 +809,7 @@ export class BoardRenderer {
       const p = t.finish ? this.castle : tilePos(t);
       const c = new Container();
       c.position.set(p.x, p.y);
+      c.rotation = this.portrait ? -Math.PI / 2 : 0;
       const g = new Graphics();
       const ringColor = m.captures.length ? "#fb4f6d" : color;
       g.circle(0, 0, TILE_R + 9).fill({ color: ringColor, alpha: 0.16 });
@@ -969,11 +891,10 @@ export class BoardRenderer {
         this.emit(at.x, at.y, tk.color, 46, 380, 0.9, 0.5);
         this.emit(at.x, at.y, "#ffffff", 20, 260, 0.6, 0.35);
         this.shockwave(at.x, at.y, tk.color, 140);
-        this.shake = 18;
         if (victim && e.to !== undefined) {
           victim.tile = e.to;
           await this.tw.wait(180);
-          await this.flyToken(victim, e.to, 700);
+          await this.flyToken(victim, e.to, 1000);
           this.layoutTokens(true);
         }
         return;
@@ -1019,7 +940,6 @@ export class BoardRenderer {
           await this.tw.wait(110);
         }
         this.emit(tk.root.x, tk.root.y, tk.color, big ? 70 : 30, big ? 480 : 260, 1, 0.5);
-        if (big) this.shake = 14;
         return this.tw.wait(big ? 300 : 200);
       }
 
@@ -1044,15 +964,13 @@ export class BoardRenderer {
         return;
 
       case "storm":
-        this.shake = 10;
         return this.tw.wait(300);
 
       case "world_event": {
-        // A wave of mist rolls across the view; quakes shake harder.
+        // A wave of mist rolls across the view.
         const { width, height } = this.app.screen;
         const halfW = width / 2 / this.cam.zoom;
         const halfH = height / 2 / this.cam.zoom;
-        this.shake = /quake|big|shake/.test(e.source ?? "") ? 26 : 8;
         for (let i = 0; i < 9; i++) {
           const x = this.cam.x - halfW + ((i + 0.5) / 9) * halfW * 2;
           const y = this.cam.y + (Math.random() - 0.5) * halfH;
@@ -1086,13 +1004,14 @@ export class BoardRenderer {
     const sy = tk.root.y;
     tk.tile = tileId;
     await this.tw.to(
-      190,
+      ANIMATION_TIMING.stepMs,
       (k) => {
-        tk.root.position.set(lerp(sx, p.x, k), lerp(sy, p.y, k) - Math.sin(k * Math.PI) * 26);
-        const squash = 1 + Math.sin(k * Math.PI) * 0.08;
+        const lift = Math.sin(k * Math.PI) * 10;
+        tk.root.position.set(lerp(sx, p.x, k) - (this.portrait ? lift : 0), lerp(sy, p.y, k) - (this.portrait ? 0 : lift));
+        const squash = 1 + Math.sin(k * Math.PI) * 0.04;
         tk.body.scale.set(2 - squash, squash);
       },
-      ease.linear,
+      ease.inOutCubic,
     );
     tk.body.scale.set(1);
     this.emit(p.x, p.y + 10, tk.color, 6, 70, 0.45, 0.25);
@@ -1101,13 +1020,13 @@ export class BoardRenderer {
   private async teleport(tk: TokenView, tileId: number) {
     this.emit(tk.root.x, tk.root.y, tk.color, 30, 220, 0.7, 0.4);
     this.shockwave(tk.root.x, tk.root.y, "#b794ff", 90);
-    await this.tw.to(220, (k) => tk.root.scale.set(1 - k));
+    await this.tw.to(350, (k) => tk.root.scale.set(1 - k));
     tk.tile = tileId;
     const p = this.tokenTarget(tk.seat);
     tk.root.position.set(p.x, p.y);
     this.shockwave(p.x, p.y, "#b794ff", 90);
     this.emit(p.x, p.y, tk.color, 30, 220, 0.7, 0.4);
-    await this.tw.to(320, (k) => tk.root.scale.set(k), ease.outBack);
+    await this.tw.to(450, (k) => tk.root.scale.set(k), ease.outCubic);
     this.layoutTokens(true);
   }
 
@@ -1116,13 +1035,14 @@ export class BoardRenderer {
     const sx = tk.root.x;
     const sy = tk.root.y;
     const p = this.tokenTarget(tk.seat);
-    const lift = Math.min(260, 60 + Math.abs(p.x - sx) * 0.3);
+    const lift = Math.min(80, 25 + Math.abs(p.x - sx) * 0.1);
     let last = 0;
     await this.tw.to(
       ms,
       (k) => {
-        tk.root.position.set(lerp(sx, p.x, k), lerp(sy, p.y, k) - Math.sin(k * Math.PI) * lift);
-        tk.root.rotation = Math.sin(k * Math.PI) * 0.6;
+        const arc = Math.sin(k * Math.PI) * lift;
+        tk.root.position.set(lerp(sx, p.x, k) - (this.portrait ? arc : 0), lerp(sy, p.y, k) - (this.portrait ? 0 : arc));
+        tk.root.rotation = (this.portrait ? -Math.PI / 2 : 0) + Math.sin(k * Math.PI) * 0.15;
         if (k - last > 0.05) {
           last = k;
           this.emit(tk.root.x, tk.root.y, tk.color, 2, 30, 0.5, 0.3);
@@ -1130,7 +1050,7 @@ export class BoardRenderer {
       },
       ease.inOutCubic,
     );
-    tk.root.rotation = 0;
+    tk.root.rotation = this.portrait ? -Math.PI / 2 : 0;
   }
 
   private shockwave(x: number, y: number, color: string | number, radius: number) {
@@ -1153,23 +1073,18 @@ export class BoardRenderer {
       },
     });
     t.anchor.set(0.5);
+    t.rotation = this.portrait ? -Math.PI / 2 : 0;
     t.position.set(x, y);
     this.fx.addChild(t);
     void this.tw.to(1300, (k) => {
-      t.y = y - k * 40;
+      t.x = x - (this.portrait ? k * 40 : 0);
+      t.y = y - (this.portrait ? 0 : k * 40);
       t.alpha = k < 0.7 ? 1 : 1 - (k - 0.7) / 0.3;
     }).then(() => t.destroy());
   }
 
   setSpeed(s: number) {
     this.tw.speed = s;
-  }
-
-  /** Visible world range, for the minimap. */
-  cameraView(): CameraView {
-    const { width } = this.app.screen;
-    const half = width / 2 / this.cam.zoom;
-    return { x0: this.cam.x - half, x1: this.cam.x + half, worldWidth: this.extents.width };
   }
 
   /** Board image for the minimap: tile dots in world coordinates. */

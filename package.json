@@ -10,6 +10,7 @@
     "typecheck": "tsc -p packages/engine && tsc -p packages/themepack",
     "sim": "tsx scripts/sim.ts",
     "server": "npm run dev -w @ludo/server",
+    "server:party": "npm run dev:party -w @ludo/server",
     "web": "npm run dev -w @ludo/web"
   },
   "devDependencies": {

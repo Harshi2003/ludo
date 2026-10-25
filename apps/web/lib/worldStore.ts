@@ -7,7 +7,7 @@ import path from "node:path";
  * Every AI-made world is written here the moment it's forged, so it survives a
  * closed tab and shows up in the world library on every device that uses this server.
  */
-const DIR = process.env.WORLDS_DIR ?? path.join(process.cwd(), "data", "worlds");
+const DIR = process.env.WORLDS_DIR ?? path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "worlds");
 
 export interface StoredWorld {
   pack: ThemePack;

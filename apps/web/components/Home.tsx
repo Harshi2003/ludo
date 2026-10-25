@@ -7,14 +7,15 @@ import { ruleCards, ruleTags } from "@/lib/rulesText";
 import { useWorldTheme, worldTheme } from "@/lib/theme";
 import { sfx } from "@/lib/sfx";
 import { loadTuning } from "@/lib/tuning";
-import { deleteWorld, exportWorld, importWorld, splitTitle, type WorldEntry } from "@/lib/worlds";
+import { deleteWorld, exportWorld, importWorld, splitTitle, isPartyWorld, type WorldEntry } from "@/lib/worlds";
 import { GlyphSvg } from "@/lib/glyphSvg";
 import { tileColor, tileGlyph } from "@/lib/visuals";
 import { Emblem } from "./Emblem";
 import { Backdrop, HeroArt } from "./Scenery";
-import type { GameConfig } from "./game/Game";
+import { LocalSetup, type LocalSession } from "./lobby/LocalSetup";
+import { primaryButton, lobbyButton } from "./lobby/Lobby";
+import { lobbyUrl } from "@/lib/lobby/invites";
 
-type Seat = { character: string; bot: boolean };
 
 function WorldShelf({ worlds, selected, onSelect, onChanged }: {
   worlds: WorldEntry[]; selected: string; onSelect: (id: string) => void; onChanged: () => void;
@@ -22,7 +23,7 @@ function WorldShelf({ worlds, selected, onSelect, onChanged }: {
   const file = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   return (
-    <section className="mt-10" aria-label="Worlds">
+    <section className="mt-6" aria-label="Worlds">
       <div className="mb-3 flex items-end justify-between gap-3">
         <h2 className="font-display text-xl font-bold">Worlds</h2>
         <button onClick={() => file.current?.click()} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-muted hover:text-ink">Import</button>
@@ -99,159 +100,89 @@ function TileChip({ t, cut }: { t: TileTypeDef; cut: string }) {
 export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: {
   pack: ThemePack;
   worlds: WorldEntry[];
-  onStart: (c: GameConfig) => void;
+  onStart: (session: LocalSession) => void;
   onSelectWorld: (id: string) => void;
   onWorldsChanged: () => void;
 }) {
   const chars = pack.characters;
+  const party = isPartyWorld(pack);
   const [title, subtitle] = splitTitle(pack.world.name);
   useWorldTheme(pack);
   const theme = worldTheme(pack);
-  const [count, setCount] = useState(4);
-  const [seats, setSeats] = useState<Seat[]>(chars.map((c, i) => ({ character: c.id, bot: i > 0 })));
   const [tuned, setTuned] = useState(false);
-  useEffect(() => setTuned(!!loadTuning(pack)), [pack]);
-
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("ludo:lobby") ?? "null");
-      const ids = new Set(chars.map((c) => c.id));
-      if (saved?.seats?.length === 4 && saved.seats.every((x: Seat) => ids.has(x.character))) {
-        setSeats(saved.seats);
-        setCount(saved.count);
-      } else {
-        setSeats(chars.map((c, i) => ({ character: c.id, bot: i > 0 })));
-      }
-    } catch {}
-  }, [chars]);
-
-  // Right after switching worlds the seats still name the old world's champions until the effect above resets them.
-  const valid = seats.every((s) => chars.some((c) => c.id === s.character));
-  const active = (valid ? seats : chars.map((c, i) => ({ character: c.id, bot: i > 0 }))).slice(0, count);
-  const cycle = (i: number) => {
-    sfx.click();
-    setSeats((s) => {
-      const used = new Set(s.slice(0, count).map((x, j) => (j === i ? "" : x.character)));
-      const ids = chars.map((c) => c.id);
-      let k = ids.indexOf(s[i].character);
-      do k = (k + 1) % ids.length; while (used.has(ids[k]));
-      const next = s.slice();
-      // Keep guardians unique: swap with whoever held it outside the active seats.
-      const holder = next.findIndex((x, j) => j !== i && x.character === ids[k]);
-      if (holder >= 0) next[holder] = { ...next[holder], character: next[i].character };
-      next[i] = { ...next[i], character: ids[k] };
-      return next;
-    });
-  };
-  const start = () => {
-    sfx.click();
-    try { localStorage.setItem("ludo:lobby", JSON.stringify({ seats, count })); } catch {}
-    onStart({ seed: (Math.random() * 2 ** 31) | 0, players: active });
-  };
-
+  useEffect(() => setTuned(!party && !!loadTuning(pack)), [pack, party]);
   const groups: [string, TileTypeDef[]][] = [
-    ["Landmarks", pack.tiles.filter((t) => t.category === "structural" && t.base !== "normal")],
-    ["Blessings", pack.tiles.filter((t) => t.category === "helpful")],
-    ["Hazards", pack.tiles.filter((t) => t.category === "harmful")],
-    ["Gambles", pack.tiles.filter((t) => t.category === "neutral")],
+    ["Landmarks", pack.tiles.filter(t => t.category === "structural" && t.base !== "normal")],
+    ["Blessings", pack.tiles.filter(t => t.category === "helpful")],
+    ["Hazards", pack.tiles.filter(t => t.category === "harmful")],
+    ["Gambles", pack.tiles.filter(t => t.category === "neutral")],
   ];
 
   return (
     <div className="relative min-h-full">
       <Backdrop pack={pack} scene={theme.scene} />
       <main className="relative mx-auto max-w-6xl px-4 pb-24 pt-[max(env(safe-area-inset-top),24px)] sm:px-8">
-        <nav className="flex items-center justify-between py-2">
+        <nav className="flex flex-wrap items-center justify-between gap-3 py-2">
           <div className="font-display text-sm font-bold tracking-[.35em] text-muted">AI · LUDO</div>
           <div className="flex items-center gap-2">
             {tuned && <span className="rounded-full bg-gold/15 px-3 py-1 text-xs text-gold">Custom tuning on</span>}
-            <Link href="/lab" className="rounded-full border border-white/10 px-3 py-1 text-xs text-muted transition hover:border-white/30 hover:text-ink">Balance Lab</Link>
+            {!party && <Link href="/lab" className="rounded-full border border-white/10 px-3 py-1 text-xs text-muted transition hover:border-white/30 hover:text-ink">Balance Lab</Link>}
             <Link href="/create" className="rounded-full bg-primary/90 px-3 py-1 text-xs font-semibold text-white shadow-[0_0_20px_-4px_var(--primary)] transition hover:bg-primary">✦ Forge a world</Link>
           </div>
         </nav>
 
-        <section className="grid items-center gap-8 pt-6 lg:grid-cols-[1.1fr_1fr] lg:pt-10">
-          <div>
-            <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-xs font-semibold uppercase tracking-[.4em] text-accent">
-              {pack.world.tagline}
-            </motion.p>
-            <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-              className="font-display mt-3 text-5xl font-black leading-[.95] sm:text-7xl">
-              <span className="title-gradient">{title}</span>
-              {subtitle && <span className="mt-2 block text-2xl font-bold text-white/90 sm:text-3xl">{subtitle}</span>}
-            </motion.h1>
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.25 }} className="mt-5 max-w-xl leading-relaxed text-white/75">
-              {pack.world.story}
-            </motion.p>
-          </div>
-          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2, duration: 0.8 }}>
-            <HeroArt pack={pack} scene={theme.scene} chars={chars} />
-          </motion.div>
-        </section>
-
         <WorldShelf worlds={worlds} selected={pack.id} onSelect={onSelectWorld} onChanged={onWorldsChanged} />
 
-        {/* Lobby */}
-        <motion.section initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}
-          className="glass mt-6 rounded-3xl p-4 sm:p-6" id="play">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-display text-xl font-bold">Choose your champions</h2>
-            <div className="flex rounded-xl bg-black/30 p-1" role="radiogroup" aria-label="Number of players">
-              {[2, 3, 4].map((n) => (
-                <button key={n} role="radio" aria-checked={count === n} onClick={() => { sfx.click(); setCount(n); }}
-                  className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition ${count === n ? "bg-primary text-white shadow" : "text-muted hover:text-white"}`}>
-                  {n} players
-                </button>
-              ))}
+        {/* The selected world: story, art and the way in. */}
+        <motion.section key={pack.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+          className="glass mt-6 grid items-center gap-6 overflow-hidden rounded-3xl p-5 sm:p-8 lg:grid-cols-[1.15fr_1fr]" aria-label="Play selected world" id="play">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[.3em] text-accent">{pack.world.tagline}</p>
+            <h1 className="font-display mt-3 text-4xl font-black leading-[.95] sm:text-6xl">
+              <span className="title-gradient">{title}</span>
+              {subtitle && <span className="mt-2 block text-xl font-bold text-white/90 sm:text-2xl">{subtitle}</span>}
+            </h1>
+            <p className="mt-4 max-w-xl text-sm leading-relaxed text-white/75">{pack.world.story}</p>
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              <Link href={lobbyUrl(pack.id, "host")} className={`${primaryButton} text-center`}>Create room</Link>
+              <Link href={lobbyUrl(pack.id, "join")} className={`${lobbyButton} grid place-items-center text-center`}>Join friends</Link>
             </div>
+            <p className="mt-3 text-xs text-muted">Share one invite link. Everyone joins, readies up, and plays on their own device. 2–4 players.</p>
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-            {active.map((s, i) => {
-              const c = chars.find((x) => x.id === s.character)!;
-              return (
-                <motion.div key={i} layout className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/25 p-3 text-center"
-                  style={{ boxShadow: `inset 0 -60px 80px -50px ${c.color}` }}>
-                  <div className="text-[10px] font-semibold uppercase tracking-[.25em] text-muted">Seat {i + 1}</div>
-                  <button onClick={() => cycle(i)} className="mx-auto mt-2 block" aria-label={`Change champion for seat ${i + 1}`}>
-                    <motion.div key={c.id} initial={{ rotateY: 90 }} animate={{ rotateY: 0 }}><Emblem c={c} size={72} glow portrait={pack.art.portraits?.[c.id]} /></motion.div>
-                  </button>
-                  <div className="font-display mt-2 text-lg font-bold" style={{ color: c.color }}>{c.name}</div>
-                  <div className="text-[11px] text-muted">{c.title} · {c.role}</div>
-                  <button onClick={() => { sfx.click(); setSeats((x) => x.map((y, j) => (j === i ? { ...y, bot: !y.bot } : y))); }}
-                    className={`mt-3 w-full rounded-lg py-1.5 text-xs font-semibold transition ${s.bot ? "bg-white/10 text-muted" : "bg-white text-[#1a0b2e]"}`}>
-                    {s.bot ? "🤖 Bot" : theme.human}
-                  </button>
-                </motion.div>
-              );
-            })}
-          </div>
-          <p className="mt-3 text-center text-xs text-muted">Tap an emblem to change champion. Several humans can share this device.</p>
-          <motion.button onClick={start} whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-            className="btn-cta font-display mt-4 w-full rounded-2xl py-4 text-lg font-black uppercase tracking-[.15em]">
-            {theme.cta}
-          </motion.button>
-          <Link href="/online" className="glass mt-3 block w-full rounded-2xl py-3 text-center font-semibold transition hover:bg-white/5">
-            🌐 Play online with friends
-          </Link>
+          <div aria-hidden="true">{party
+            ? <img src="/party-ludo/party-lounge-v1.png" alt="" className="aspect-square w-full rounded-2xl object-cover" />
+            : <HeroArt pack={pack} scene={theme.scene} chars={chars} />}</div>
         </motion.section>
 
-        {/* This world's rules */}
-        <section className="mt-14" aria-labelledby="how">
-          <h2 id="how" className="font-display text-2xl font-bold">How {title} plays</h2>
-          <p className="mt-1 text-sm text-muted">Every world has its own rules. Here are this one's.</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            {ruleCards(pack).map((r) => (
-              <div key={r.key} className="glass rounded-2xl p-4">
-                <div className="flex items-center gap-2">
-                  <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-white/[.07] px-1.5 text-sm text-gold">{r.icon}</span>
-                  <span className="font-display font-bold text-gold">{r.title}</span>
-                </div>
-                <p className="mt-2 text-sm leading-relaxed text-white/75">{r.text}</p>
-              </div>
-            ))}
-          </div>
-        </section>
+        <details className="glass mt-4 rounded-3xl p-5 sm:p-6">
+          <summary className="cursor-pointer font-display text-lg font-bold">Play on one device</summary>
+          <LocalSetup key={pack.id} pack={pack} onStart={onStart} />
+        </details>
 
-        {/* Champions */}
+        {party ? (
+          <section className="mt-10">
+            <h2 className="font-display text-2xl font-bold">Party stops</h2>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{pack.tiles.map((t) => <TileChip key={t.id} t={t} cut={pack.art.palette.bg} />)}</div>
+          </section>
+        ) : (
+          <>
+            {/* This world's rules */}
+            <section className="mt-14" aria-labelledby="how">
+              <h2 id="how" className="font-display text-2xl font-bold">How {title} plays</h2>
+              <p className="mt-1 text-sm text-muted">Every world has its own rules. Here are this one's.</p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {ruleCards(pack).map((r) => (
+                  <div key={r.key} className="glass rounded-2xl p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="grid h-8 min-w-8 place-items-center rounded-lg bg-white/[.07] px-1.5 text-sm text-gold">{r.icon}</span>
+                      <span className="font-display font-bold text-gold">{r.title}</span>
+                    </div>
+                    <p className="mt-2 text-sm leading-relaxed text-white/75">{r.text}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+
         <section className="mt-14">
           <h2 className="font-display text-2xl font-bold">The Champions</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -291,7 +222,8 @@ export function Home({ pack, worlds, onStart, onSelectWorld, onWorldsChanged }: 
             ))}
           </div>
         </section>
-
+          </>
+        )}
       </main>
     </div>
   );

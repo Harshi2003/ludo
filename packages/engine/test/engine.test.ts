@@ -35,9 +35,9 @@ describe('board generator', () => {
     }
   });
 
-  it('has fewer mesh lanes than players and shared collision tiles', () => {
+  it('has a changing graph frontier and shared collision tiles', () => {
     const b = board(4);
-    expect(b.lanes).toBeLessThan(4);
+    expect(b.lanes).toBe(3);
     expect(b.tiles.filter((t) => t.shared).length).toBeGreaterThan(8);
   });
 

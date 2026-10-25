@@ -54,7 +54,59 @@ function setup() {
   return { clock, mgr, host, guest, code, hostId: welcome.you.id, guestWelcome: guest.last('welcome')! };
 }
 
+function readyPlayers(manager: RoomManager, ...peers: FakePeer[]) {
+  for (const peer of peers) manager.handle(peer, { t: 'ready', ready: true });
+}
+
 describe('rooms', () => {
+  it('requires friends and ready checks, then starts only the humans who joined', () => {
+    const clock = new FakeClock(), mgr = new RoomManager(clock), host = new FakePeer();
+    mgr.handle(host, { t: 'create', name: 'Ana', pack: magicPack, profile: { kind: 'animal', animal: 'cat' } });
+    const code = host.last('welcome')!.room.code;
+    mgr.handle(host, { t: 'ready', ready: true });
+    mgr.handle(host, { t: 'start' });
+    expect(host.last('error')!.message).toContain('two friends');
+    const guest = new FakePeer();
+    mgr.handle(guest, { t: 'join', code, name: 'Júlia', profile: { kind: 'animal', animal: 'panda' } });
+    expect(host.last('room')!.room.members.every(m => !m.ready)).toBe(true);
+    readyPlayers(mgr, host);
+    mgr.handle(host, { t: 'start' });
+    expect(host.last('error')!.message).toContain('connected and ready');
+    readyPlayers(mgr, guest);
+    mgr.handle(host, { t: 'start' });
+    const started = host.last('start')!;
+    expect(started.room.allowBots).toBe(false);
+    expect(started.room.seats).toHaveLength(2);
+    expect(started.room.seats!.every(s => s.owner && !s.covering)).toBe(true);
+    expect(started.room.members.map(m => m.profile)).toEqual([{ kind: 'animal', animal: 'cat' }, { kind: 'animal', animal: 'panda' }]);
+    clock.advance(10 * 60_000);
+    expect(host.last('update')).toBeUndefined();
+  });
+
+  it('resets readiness on settings changes and keeps lobby profiles and tokens across reconnects', () => {
+    const { mgr, host, guest, code, guestWelcome } = setup();
+    readyPlayers(mgr, host, guest);
+    mgr.handle(guest, { t: 'bots', enabled: true });
+    expect(guest.last('error')!.message).toContain('host');
+    mgr.handle(host, { t: 'bots', enabled: true });
+    expect(host.last('room')!.room.members.every(m => !m.ready)).toBe(true);
+    readyPlayers(mgr, host, guest);
+    mgr.leave(guest);
+    expect(host.last('room')!.room.members.find(m => m.id === guestWelcome.you.id)!.connected).toBe(false);
+    const returning = new FakePeer();
+    mgr.handle(returning, { t: 'join', code, name: 'Ben', token: guestWelcome.you.token });
+    expect(returning.last('welcome')!.you.id).toBe(guestWelcome.you.id);
+    expect(host.last('room')!.room.members.every(m => !m.ready)).toBe(true);
+    mgr.handle(returning, { t: 'leave' });
+    expect(host.last('room')!.room.members).toHaveLength(1);
+  });
+
+  it('rejects invalid profile data before allocating a room', () => {
+    const mgr = new RoomManager(new FakeClock()), peer = new FakePeer();
+    mgr.handle(peer, { t: 'create', name: 'Ana', pack: magicPack, profile: { kind: 'photo', dataUrl: 'https://example.test/photo.svg' } });
+    expect(peer.last('error')!.message).toContain('profile photo');
+    expect(mgr.rooms.size).toBe(0);
+  });
   it('creates a room and lets a friend join by code', () => {
     const { host, code, guestWelcome } = setup();
     expect(code).toMatch(/^[A-Z2-9]{5}$/);
@@ -81,9 +133,61 @@ describe('rooms', () => {
     expect(p.last('error')!.message).toMatch(/valid/);
   });
 
+  it('rejects duplicate names after cleaning and ignoring case, but allows token reconnection', () => {
+    const { mgr, code, host, guest, hostId } = setup();
+    const duplicate = new FakePeer();
+    mgr.handle(duplicate, { t: 'join', code, name: '  aNA! ' });
+    expect(duplicate.last('error')!.message).toMatch(/name is already taken/);
+    const token = host.last('welcome')!.you.token;
+    mgr.handle(host, { t: 'players', count: 2 });
+    readyPlayers(mgr, host, guest);
+    mgr.handle(host, { t: 'start' });
+    mgr.leave(host);
+    const back = new FakePeer();
+    mgr.handle(back, { t: 'join', code, name: 'Ana', token });
+    expect(back.last('welcome')!.you.id).toBe(hostId);
+  });
+
+  it('transfers hosting during a game so the remaining player can rematch', () => {
+    const { mgr, host, guest, clock, guestWelcome } = setup();
+    mgr.handle(host, { t: 'bots', enabled: true });
+    mgr.handle(host, { t: 'players', count: 2 });
+    readyPlayers(mgr, host, guest);
+    mgr.handle(host, { t: 'start' });
+    mgr.leave(host);
+    expect(guest.last('room')!.room.hostId).toBe(guestWelcome.you.id);
+    for (let i = 0; i < 400 && guest.last('update')?.room.status !== 'over'; i++) clock.advance(5 * 60_000);
+    expect(guest.last('update')!.room.status).toBe('over');
+    mgr.handle(guest, { t: 'rematch' });
+    expect(guest.last('room')!.room.status).toBe('lobby');
+    expect(guest.last('room')!.room.members.every(m => !m.ready)).toBe(true);
+  });
+
+  it('never silently drops a selected player when changing the seat count', () => {
+    const { mgr, host, guest, code } = setup();
+    mgr.handle(host, { t: 'players', count: 2 });
+    const watcher = new FakePeer();
+    mgr.handle(watcher, { t: 'join', code, name: 'Cat' });
+    expect(watcher.last('welcome')!.room.members.find((m) => m.name === 'Cat')!.character).toBeNull();
+    mgr.handle(watcher, { t: 'pick', character: magicPack.characters[2].id });
+    expect(watcher.last('error')!.message).toMatch(/seats are taken/);
+    mgr.handle(host, { t: 'players', count: 3 });
+    mgr.handle(watcher, { t: 'pick', character: magicPack.characters[2].id });
+    mgr.handle(host, { t: 'players', count: 2 });
+    expect(host.last('error')!.message).toMatch(/Not enough seats/);
+    expect(guest.last('room')!.room.playerCount).toBe(3);
+    mgr.handle(watcher, { t: 'pick', character: null });
+    mgr.handle(host, { t: 'players', count: 2 });
+    readyPlayers(mgr, host, guest);
+    mgr.handle(host, { t: 'start' });
+    expect(host.last('start')!.room.seats!.map((s) => s.owner).filter(Boolean)).toHaveLength(2);
+  });
+
   it('runs a server-authoritative game: turn ownership, bots, updates to everyone', () => {
     const { mgr, host, guest, clock, hostId } = setup();
+    mgr.handle(host, { t: 'bots', enabled: true });
     mgr.handle(host, { t: 'players', count: 3 });
+    readyPlayers(mgr, host, guest);
     mgr.handle(host, { t: 'start' });
     const start = host.last('start')!;
     expect(guest.last('start')).toBeTruthy();
@@ -107,7 +211,9 @@ describe('rooms', () => {
 
   it('covers a disconnected player with a bot and hands the seat back on reconnect', () => {
     const { mgr, host, guest, clock, code, guestWelcome } = setup();
+    mgr.handle(host, { t: 'bots', enabled: true });
     mgr.handle(host, { t: 'players', count: 2 });
+    readyPlayers(mgr, host, guest);
     mgr.handle(host, { t: 'start' });
     mgr.leave(guest);
     clock.advance(TIMING.disconnectGraceMs + 60_000);
@@ -124,13 +230,19 @@ describe('rooms', () => {
   });
 
   it('plays a whole game to the end and allows a rematch', () => {
-    const { mgr, host, clock } = setup();
+    const { mgr, host, guest, clock } = setup();
+    mgr.handle(host, { t: 'bots', enabled: true });
     mgr.handle(host, { t: 'players', count: 2 });
+    readyPlayers(mgr, host, guest);
     mgr.handle(host, { t: 'start' });
     for (let i = 0; i < 400 && host.last('update')?.room.status !== 'over'; i++) clock.advance(5 * 60_000);
     expect(host.last('update')!.room.status).toBe('over');
     expect(host.last('update')!.state.winner).not.toBeNull();
     mgr.handle(host, { t: 'rematch' });
+    expect(host.last('room')!.room.status).toBe('lobby');
+    expect(host.last('room')!.room.members.every(m => !m.ready)).toBe(true);
+    readyPlayers(mgr, host, guest);
+    mgr.handle(host, { t: 'start' });
     expect(host.last('start')!.room.status).toBe('playing');
   });
 });
